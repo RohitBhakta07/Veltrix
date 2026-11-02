@@ -66,7 +66,7 @@ flowchart TD
 - **Priority:** P0 (Blocker)  
 - **Complexity:** High (5 SP)  
 - **Dependencies:** None (Builds on TASK-801 verification foundation)  
-- **Status:** Current — Architecture ready; implementation not started  
+- **Status:** COMPLETED (Implemented in PR #18)  
 - **Description:** Implement custom Node.js `http.Agent` and `https.Agent` egress transport layer that enforces SSRF filtering, connection-level socket IP pinning, ambient proxy bypass, separate request authorization contexts (`VerificationScopeGuard` vs `AuthorizedScanScopeGuard`), strict hop-by-hop redirect validation, independent streaming decompression safeguards, and tenant-scoped emergency abort.
 - **Key Deliverables:**
   - `backend/src/scanner/transport/types.ts`
