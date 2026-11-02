@@ -44,6 +44,7 @@ flowchart TD
 - **Priority:** P0 (Blocker)  
 - **Complexity:** Medium (3 SP)  
 - **Dependencies:** None  
+- **Status:** COMPLETED (Merged in PR #15 & PR #16)  
 - **Description:** Implement the multi-method domain ownership verification subsystem that establishes cryptographic authorization prior to any scanning activity. Integrates with existing `backend/src/services/domain-verification.ts` and `backend/src/routes/websites.ts`.
 - **Key Deliverables:**
   - `backend/src/scanner/verification/verifier.ts`
@@ -57,28 +58,56 @@ flowchart TD
   4. Implements HTML `<meta name="veltrix-site-verification">` challenge parsing.
   5. Enforces 90-day authorization lifetime, 7-day grace period, and expiration transitions.
   6. Enforces tenant domain uniqueness constraint to prevent cross-tenant domain hijacking via DynamoDB transactional writes (`PK = DOMAIN#{domain}`, `SK = OWNERSHIP`).
+  7. Enforces connection-level IP pinning, strict IPv6 parsing, zone identifier rejection, and positive IPv6 global-unicast policy (`2000::/3`) on HTTP verification fetcher.
 
 ---
 
 ### TASK-802: Hardened Safe HTTP Transport Layer (`SafeHttpClient`)
 - **Priority:** P0 (Blocker)  
 - **Complexity:** High (5 SP)  
-- **Dependencies:** None  
-- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` overrides that enforce SSRF filtering, socket-level IP pinning, ambient proxy bypass, hop-by-hop redirect validation, and stream safeguards.
+- **Dependencies:** None (Builds on TASK-801 verification foundation)  
+- **Status:** READY FOR IMPLEMENTATION (Architecture Hardened)  
+- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` egress transport layer that enforces SSRF filtering, connection-level socket IP pinning, ambient proxy bypass, separate request authorization contexts, strict hop-by-hop redirect validation, streaming decompression safeguards, and scan-scoped emergency abort.
 - **Key Deliverables:**
+  - `backend/src/scanner/transport/types.ts`
   - `backend/src/scanner/transport/safe-http-client.ts`
-  - `backend/src/scanner/transport/ip-validator.ts`
+  - `backend/src/scanner/transport/ip-validator.ts` (extracted shared IPv4/IPv6 validator, backward-compatible re-exports in `http-verifier.ts`)
   - `backend/src/scanner/transport/dns-resolver.ts`
+  - `backend/src/scanner/transport/socket-connector.ts`
   - `backend/src/scanner/transport/redirect-handler.ts`
+  - `backend/src/scanner/transport/stream-decompressor.ts`
 - **Acceptance Criteria:**
-  1. Validates all resolved IPv4 and IPv6 addresses against private, loopback, link-local, carrier-grade NAT, and cloud metadata ranges (`169.254.169.254`, `[fd00:ec2::254]`).
-  2. Normalizes non-canonical numeric IP representations (octal, hex, dword, zero-compressed) prior to validation.
-  3. Explicitly bypasses ambient `HTTP_PROXY` and `HTTPS_PROXY` to prevent proxy-based SSRF bypass.
-  4. Directs socket creation (`net.createConnection`) to the validated, pinned IP address, completely eliminating Time-Of-Check to Time-Of-Use (TOCTOU) DNS rebinding.
-  5. Preserves original hostname for TLS SNI and certificate hostname verification (`rejectUnauthorized: true`).
-  6. Intercepts `3xx` redirects at each hop, validating destination host and IP before issuing subsequent requests (max 5 hops).
-  7. Implements response decompression stream limits (max 10 MB) to prevent zip bombs.
-  8. Enforces connection timeout (5s), response header timeout (10s), and body idle timeout (15s).
+  1. **Dual Request Authorization Contexts**:
+     - `DOMAIN_OWNERSHIP_VERIFICATION`: Permitted only for registered domain challenge paths; does not require prior VERIFIED status (avoids circular dependency); strictly forbids redirects (0 hops).
+     - `AUTHORIZED_SCAN`: Requires verified, unexpired, non-blocked domain ownership (`status === 'VERIFIED'`, `!scanBlocked`, `expiresAt > Date.now()`) and enforced `ScopeGuard` (`allowedHosts`, `excludedPaths`). Evaluated before DNS resolution and connection.
+     - Contexts are server-derived via trusted internal services; untrusted API clients cannot select request purpose or forge context.
+  2. **SSRF & IP Validation**:
+     - Preserves all TASK-801 protections: canonical IPv4 normalization (octal/hex/dword), strict IPv6 parsing (requiring `missing >= 1` zero-compression, rejecting `%` zone IDs), positive `2000::/3` policy, preserved special exclusions (`2001::/23`, `2001:db8::/32`, `3fff::/20`), and 6to4 embedded IPv4 evaluation.
+     - Fails closed immediately if ANY resolved DNS record is prohibited.
+  3. **Connection-Level Socket IP Pinning & Proxy Isolation**:
+     - Socket creation (`net.createConnection`) connects directly to validated pinned IP; agent `lookup` hook returns pinned IP. Zero secondary DNS lookups.
+     - Ambient `HTTP_PROXY` / `HTTPS_PROXY` strictly ignored.
+     - TLS SNI (`servername`) passed; certificate hostname validation enforced (`rejectUnauthorized: true`).
+  4. **Strict Redirect Policy**:
+     - Default `maxRedirects = 0`. Domain verification never follows redirects.
+     - Authorized scanning follows redirects only with explicit policy & scope guard; every hop undergoes URL validation, DNS resolution, full IP validation, and scope verification.
+     - Strictly rejects HTTPS-to-HTTP downgrade. Detects loops (`visitedUrls`) and enforces max 5 hops ceiling.
+     - Strips `Authorization` and `Cookie` headers on cross-origin redirects.
+  5. **HTTP Method & Outbound Port Policy**:
+     - Ordinary scanner requests default to `GET` and `HEAD` only. Unrestricted `DELETE`, `PUT`, `PATCH`, `POST` are barred.
+     - Non-GET/HEAD methods require an explicitly authorized operation policy designed for that probe.
+     - Outbound ports restricted to 80 and 443 by default; non-standard ports require explicit server-controlled authorization policy.
+  6. **Streaming Decompression & Resource Limits**:
+     - Enforces independent streaming ceilings: max 2 MB raw compressed bytes, max 10 MB decompressed bytes, max 100:1 compression expansion ratio.
+     - Never trusts `Content-Length` alone. Destroys stream and socket immediately if any ceiling is breached.
+     - Handles unsupported or malformed encodings safely (fail closed).
+  7. **Granular Timeouts & Scan-Scoped Abort (500 ms SLO)**:
+     - Enforces connection timeout (5s), response header timeout (10s), body idle timeout (15s), and total request timeout (30s).
+     - Active sockets tracked in scan-scoped registry: `abortScan(scanId)` terminates all sockets for that specific scan within **500 ms** SLO with complete tenant isolation.
+     - Process-wide abort reserved exclusively for process shutdown or host emergency.
+  8. **Connection Reuse**:
+     - Disabled cross-request reuse by default (`keepAlive: false`, `Connection: close`).
+     - Future pooling strictly keyed by `(orgId, scanId, destinationHost, pinnedIp, port, tlsIdentity)`. Never pooled across tenants.
 
 ---
 

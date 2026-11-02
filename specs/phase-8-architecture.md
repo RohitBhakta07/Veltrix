@@ -98,42 +98,108 @@ flowchart TD
   6. Port is explicitly permitted (default: 80, 443, 8080, 8443).
 
 ### 2.2 Hardened Safe HTTP Transport Layer (`SafeHttpClient`)
-- **Responsibility:** Executes all outbound network connections with comprehensive SSRF, DNS rebinding, proxy isolation, and payload size protections.
-- **Core Architecture:**
-  - Built upon custom Node.js `http.Agent` and `https.Agent` overrides.
-  - **Proxy Isolation Policy:** Outbound scanner traffic strictly ignores ambient `HTTP_PROXY` and `HTTPS_PROXY` environment variables by default. To prevent proxy-based SSRF bypass (where a corporate proxy performs DNS resolution and hits internal networks), scanner requests connect directly to target IP addresses.
-  - **Pre-Flight DNS Resolution & IP Normalization:**
-    - Resolves hostnames to all IPv4 and IPv6 addresses.
-    - Normalizes numeric representations (octal `0177.0.0.1`, hex `0x7f.0.0.1`, dword `2130706433`, zero-compressed `127.1`) to canonical dotted-quad or hex IPv6.
-    - Evaluates all returned addresses against strict denylists:
-      - `127.0.0.0/8` (Loopback)
-      - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918 Private)
-      - `169.254.0.0/16` (Link-Local & Cloud Metadata `169.254.169.254`)
-      - `100.64.0.0/10` (Carrier-Grade NAT)
-      - `0.0.0.0/8`, `255.255.255.255/32` (Broadcast / Current Network)
-      - `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (TEST-NET)
-      - `::1/128` (IPv6 Loopback), `::/128` (Unspecified)
-      - `fe80::/10` (IPv6 Link-Local), `fc00::/7` (IPv6 Unique Local)
-      - `::ffff:0:0/96` (IPv4-Mapped IPv6)
-      - `[fd00:ec2::254]` (AWS IMDSv6 Metadata)
-  - **DNS Pinning at Socket Level (TOCTOU Elimination):**
-    - The `agent.createConnection(options, callback)` hook intercepts socket creation.
-    - Calls `net.createConnection({ host: pinnedIp, port: options.port })`.
-    - For TLS connections, wraps the connected socket using `tls.connect({ socket, servername: options.host, rejectUnauthorized: true })`.
-    - Guarantees:
-      1. Zero secondary DNS resolution occurs at connect time (defeats DNS rebinding).
-      2. TLS SNI (`servername: options.host`) is passed so virtual hosting functions correctly.
-      3. TLS certificate validation verifies that the presented certificate matches the requested hostname.
-  - **Hop-by-Hop Redirect Validation:**
-    - Automated redirects are disabled (`redirect: 'manual'` or `maxRedirects: 0`).
-    - For any `301`, `302`, `303`, `307`, or `308` response, `Location` header is parsed and resolved.
-    - Redirect target is validated through `ScopeGuard` and `SafeHttpClient` pre-flight checks before subsequent connection is permitted.
-    - Maximum redirect depth is capped at 5.
-  - **Stream Safeguards & Timeout Boundaries:**
-    - Maximum response stream size: 10 MB (prevents memory exhaustion or decompression bombs).
-    - Connection timeout: 5,000 ms.
-    - Response header timeout: 10,000 ms.
-    - Response body idle timeout: 15,000 ms.
+- **Responsibility:** Executes all outbound network connections with comprehensive SSRF, DNS rebinding, proxy isolation, separate request authorization contexts, hop-by-hop redirect safety, and streaming resource safeguards.
+- **Core Architecture & Operating Principles:**
+  - Built upon custom Node.js `http.Agent` and `https.Agent` socket creation overrides.
+  - Acts as the foundational egress transport layer for all scanner operations (crawler, passive inspection, active probing) while providing backward compatibility for domain verification.
+
+#### 2.2.1 Separate Request Authorization Purposes & Context Derivation
+To prevent circular authorization dependencies and eliminate unauthorized scanning bypasses, `SafeHttpClient` strictly distinguishes two internally governed request purposes:
+
+1. **`DOMAIN_OWNERSHIP_VERIFICATION` Context**:
+   - **Scope & Applicability:** Permitted exclusively for verifying ownership challenges against a registered website asset (`/.well-known/veltrix-challenge/<token>` and root document HTML `<meta>` tags).
+   - **Circular Dependency Elimination:** Verification takes place *before* a domain is verified. Therefore, this context **must not** require the target website to already possess `VERIFIED` status.
+   - **Anti-Bypass Guard:** This context is strictly pinned to the asset's registered `primaryDomain` and explicit challenge paths. It is structurally barred from arbitrary URI traversal, active probing, or generalized scanning.
+   - **Strict Redirect Ban:** `maxRedirects` is hardcoded to `0`. Verification requests **never** follow redirects under any circumstances.
+
+2. **`AUTHORIZED_SCAN` Context**:
+   - **Scope & Applicability:** Used for all scanner worker traffic (crawling, passive rules, active canary probes).
+   - **Inviolable Precondition:** Requires a verified, server-derived website and tenant context where `site.status === 'VERIFIED'`, `!site.scanBlocked`, and `site.expiresAt > Date.now()`.
+   - **Scope Guard Integration:** Requires an active, server-controlled `ScopeGuard` enforcing `allowedHosts` (primary domain + approved subdomains), `excludedPaths`, and permitted ports.
+   - **Pre-Flight Enforcement:** Authorization and scope evaluations occur **prior** to initiating DNS queries and prior to socket connection. Every subsequent redirect hop is re-validated against the authorized scope before dispatch.
+
+- **Server-Derived Context Invariant:**
+  - Request authorization contexts are constructed strictly by trusted internal service layers (e.g. `DomainOwnershipVerifier` or `ScanWorker`).
+  - Untrusted API clients, HTTP headers, or query parameters can **never** select the request purpose or forge authorization tokens.
+
+#### 2.2.2 Hop-by-Hop Redirect Validation Policy
+Redirect handling is a primary vector for SSRF escalation and cross-tenant boundary escape:
+- **Default Behavior:** `maxRedirects` defaults to `0` across all requests.
+- **Domain Verification:** Zero redirects permitted (`maxRedirects = 0`). Any 3xx response immediately fails closed.
+- **Authorized Scanning:** May follow redirects if and only if an explicit redirect policy and scope guard are configured:
+  1. **Hop Ceiling:** Maximum 5 redirect hops. Exceeding 5 hops terminates the chain with `MAX_REDIRECTS_EXCEEDED`.
+  2. **Loop Detection:** Maintains a set of visited canonical URLs (`visitedUrls`). Any cyclical redirect triggers immediate termination with `REDIRECT_LOOP_DETECTED`.
+  3. **Hop-by-Hop Revalidation:** Every intermediate hop must undergo:
+     - Target URL protocol validation: strictly `http:` or `https:`.
+     - Scheme downgrade ban: **strictly rejects HTTPS-to-HTTP downgrades** to prevent plaintext credential exposure.
+     - Scope revalidation: destination host must belong to `allowedHosts` under the active `ScopeGuard`. Cross-origin redirects out of scope are blocked.
+     - DNS resolution with timeout: destination host is resolved pre-flight.
+     - SSRF & IP denylist validation: every resolved IPv4/IPv6 address must pass the denylist and positive `2000::/3` policy before connecting.
+  4. **Credential & Header Hygiene:** On cross-origin redirects (e.g., between approved subdomains), sensitive headers (`Authorization`, `Cookie`, and tenant custom headers) are stripped prior to dispatch.
+  5. **Status-Specific Semantics:** HTTP 303 redirects force conversion of method to `GET` and discard request body per RFC 7231.
+
+#### 2.2.3 HTTP Method and Outbound Port Policy
+- **Method Restrictions:**
+  - Ordinary scanner requests (crawling and passive inspection) default to `GET` and `HEAD` methods only.
+  - Unrestricted `DELETE`, `PUT`, `PATCH`, or `POST` methods are strictly barred from the general transport interface.
+  - Any future active probe requiring non-GET/HEAD operations (e.g., specialized API canary probes in TASK-805) must use an explicitly authorized operation policy scoped specifically to that probe module.
+- **Port Restrictions:**
+  - Outbound connection ports default strictly to `80` (HTTP) and `443` (HTTPS).
+  - Outbound connections to non-standard ports (e.g., `8080`, `8443`) are rejected by default unless explicitly whitelisted in the asset's verified configuration and approved by an internal server policy. High ephemeral ports and common internal service ports (e.g., 22, 3306, 5432, 6379, 27017) are categorically blocked.
+
+#### 2.2.4 Pre-Flight DNS Resolution, IP Pinning & Positive IPv6 Policy
+Preserves and unifies the security guarantees established in TASK-801 (PR #15 & PR #16):
+- **Ambient Proxy Isolation:** Direct TCP socket creation bypasses ambient `HTTP_PROXY` and `HTTPS_PROXY` environment variables by default to eliminate proxy-based SSRF bypass.
+- **Pre-Flight DNS Resolution:** Resolves target hostname for all A and AAAA records using `AddressResolverInterface.lookup(hostname, { all: true })` bounded by a strict DNS timeout.
+- **Multi-Record Fail-Closed Mandate:** Validates *every* returned address. If **any** record is invalid, malformed, or prohibited, the entire request fails closed immediately.
+- **IPv4 Canonical Normalization & Denylist:** Normalizes octal (`0177.0.0.1`), hex (`0x7f.0.0.1`), dword (`2130706433`), and zero-compressed (`127.1`) inputs. Blocks RFC 1918 private space, loopback (`127.0.0.0/8`), link-local / IMDS (`169.254.0.0/16`), CGNAT (`100.64.0.0/10`), multicast/broadcast, and testnets.
+- **Strict RFC 4291/5952 IPv6 Parsing:**
+  - Enforces mandatory zero-compression: when `::` is present, requires `missing >= 1`. Addresses containing 8 hextets plus `::` fail closed as invalid syntax.
+  - Strict zone identifier rejection: scoped zone IDs (`%interface`) are rejected (`return null`), never silently stripped.
+- **Positive IPv6 Global-Unicast Policy (`2000::/3`):**
+  - Only Global Unicast space (`(w0 & 0xe000) === 0x2000`) is routable. All non-global, unallocated (`4000::1`), reserved (`fe00::1`, `f000::1`), deprecated IPv4-compatible (`::8.8.8.8`), IPv4-mapped (`::ffff:...`), ULA (`fc00::/7`), and link-local (`fe80::/10`) addresses are prohibited.
+  - Within `2000::/3`, preserves exclusions for IETF special-purpose space (`2001::/23`) and documentation blocks (`2001:db8::/32`, `3fff::/20`).
+  - Preserves 6to4 policy (`2002::/16`) evaluating embedded IPv4 bytes against SSRF denylist.
+- **Socket-Level IP Pinning (TOCTOU Elimination):**
+  - Selects first validated IP record (`pinnedIp`).
+  - Intercepts connection via `agent.createConnection` and calls `net.createConnection({ host: pinnedIp, port })`.
+  - Overrides agent `lookup` callback to return `pinnedIp`, completely eliminating secondary DNS lookups.
+  - Passes TLS SNI `servername: parsedUrl.hostname` and enforces `rejectUnauthorized: true` for strict certificate validation.
+
+#### 2.2.5 Streaming Decompression & Multi-Layer Resource Ceilings
+To prevent Denial-of-Service, memory exhaustion, and zip-bombs:
+- **Streaming Enforcement:** Size limits are enforced continuously during stream consumption; the client **never** trusts `Content-Length` headers alone.
+- **Independent Resource Ceilings:**
+  1. **Raw Compressed Bytes Ceiling:** Maximum **2 MB** of compressed wire data.
+  2. **Decompressed Bytes Ceiling:** Maximum **10 MB** of uncompressed body data.
+  3. **Compression Expansion Ratio Ceiling:** Maximum **100:1** ratio. If decompressed throughput exceeds 100x the consumed compressed bytes (after a 64 KB warm-up), a zip-bomb is flagged.
+  4. **Decompression Time & Resource Watchdog:** Enforces CPU/time bounds on decompression transform streams.
+- **Immediate Socket Destruction:** If any ceiling is breached or a malformed/unsupported encoding is encountered, the decompressor stream, response stream, and underlying socket are destroyed immediately (`socket.destroy()`) and the request promise rejects with `MAX_RESPONSE_SIZE_EXCEEDED` or `DECOMPRESSION_BOMB_DETECTED`.
+
+#### 2.2.6 Multi-Stage Timeouts & Scan-Scoped Active Socket Registry
+- **Granular Timeout Stages:**
+  - **Connection Timeout:** 5,000 ms (TCP connect and TLS handshake).
+  - **Response Header Timeout:** 10,000 ms (time from connection to first response header byte).
+  - **Body Idle Timeout:** 15,000 ms (maximum silence between response body chunks).
+  - **Total Request Timeout:** 30,000 ms (absolute end-to-end watchdog).
+- **Scan-Scoped Active Socket Registry (`ActiveSocketRegistry`):**
+  - Sockets are registered with their associated `scanId` and `orgId`.
+  - **Tenant-Isolated Emergency Cancellation:** The orchestrator invokes `abortScan(scanId)`, which closes all active sockets belonging to that specific scan within **500 ms** SLO without disrupting concurrent scans from the same or other tenants.
+  - **Lifecycle Cleanup:** Socket registrations are deterministically deregistered upon request completion, failure, timeout, or abort.
+  - **Process-Wide Abort Reserve:** Process-level socket termination (`abortAllSockets()`) is strictly reserved for host process shutdown or catastrophic host emergency.
+
+#### 2.2.7 Connection Reuse & Pooling Policy
+- **Default Policy:** Cross-request connection reuse is **disabled** by default (`keepAlive: false`, `Connection: close`) to ensure maximum isolation and deterministic IP pinning per request.
+- **Future Pooling Constraints:** If persistent pooling is introduced in future phases for high-throughput scanning:
+  - Connection pools must be strictly partition-keyed by `(orgId, scanId, destinationHost, pinnedIp, port, tlsIdentity)`.
+  - Sockets must **never** be shared across tenants or across distinct scan scopes.
+
+#### 2.2.8 Backward-Compatible Shared Transport Extraction Plan
+- The core IP parsing and SSRF classification functions from TASK-801 (`parseIpv4ToNumber`, `normalizeIpv4`, `isProhibitedIpv4Bytes`, `isProhibitedIpv4`, `parseIpv6`, `isIpLiteral`, `isProhibitedIp`) will be extracted into `backend/src/scanner/transport/ip-validator.ts`.
+- `backend/src/scanner/verification/http-verifier.ts` will import and re-export these functions, preserving 100% backward compatibility for all existing TASK-801 imports and tests without duplicating security logic.
+- `DefaultHttpFetcher` will function as an adapter utilizing the underlying hardened transport mechanisms.
+
+---
 
 ### 2.3 Bounded Crawler & Endpoint Discovery Engine (`BoundedCrawler`)
 - **Responsibility:** Discovers accessible web surface area without triggering destructive actions or crossing domain boundaries.
