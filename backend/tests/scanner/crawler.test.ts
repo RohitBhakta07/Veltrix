@@ -33,6 +33,7 @@ import {
   normalizeUrl,
   normalizeUrlOrThrow,
   isBinaryOrMediaUrl,
+  isScriptResourceUrl,
   KNOWN_SESSION_QUERY_PARAMS,
 } from '../../src/scanner/crawler/index.js';
 import {
@@ -89,13 +90,22 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
       expect(normalizeUrl('https://example.com/login;sid=998877')).toBe('https://example.com/login');
     });
 
-    it('sorts query parameters deterministically by key and value', () => {
+    it('sorts query parameters deterministically by distinct key while preserving duplicate values in original relative order', () => {
       expect(normalizeUrl('https://example.com/search?z=3&a=1&m=2')).toBe(
         'https://example.com/search?a=1&m=2&z=3'
       );
-      // Preserves duplicate keys and sorts values deterministically
+      // Preserves original relative order and count of duplicate parameter values
       expect(normalizeUrl('https://example.com/items?tag=zebra&tag=apple')).toBe(
-        'https://example.com/items?tag=apple&tag=zebra'
+        'https://example.com/items?tag=zebra&tag=apple'
+      );
+      expect(normalizeUrl('https://example.com/auth?role=user&role=admin')).toBe(
+        'https://example.com/auth?role=user&role=admin'
+      );
+      expect(normalizeUrl('https://example.com/tags?tag=a&tag=b&tag=a')).toBe(
+        'https://example.com/tags?tag=a&tag=b&tag=a'
+      );
+      expect(normalizeUrl('https://example.com/mixed?z=1&role=user&a=2&role=admin')).toBe(
+        'https://example.com/mixed?a=2&role=user&role=admin&z=1'
       );
     });
 
@@ -152,6 +162,19 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
       expect(isBinaryOrMediaUrl('https://example.com/index.html')).toBe(false);
       expect(isBinaryOrMediaUrl('https://example.com/api/v1/users')).toBe(false);
       expect(isBinaryOrMediaUrl('https://example.com/login.php')).toBe(false);
+    });
+
+    it('identifies static JavaScript resource extensions (.js, .mjs, .cjs) correctly', () => {
+      // JavaScript files
+      expect(isScriptResourceUrl('https://example.com/app.js')).toBe(true);
+      expect(isScriptResourceUrl('https://example.com/module.mjs')).toBe(true);
+      expect(isScriptResourceUrl('https://example.com/common.cjs')).toBe(true);
+
+      // Non-script web and API endpoints
+      expect(isScriptResourceUrl('https://example.com/api/v1/users')).toBe(false);
+      expect(isScriptResourceUrl('https://example.com/data.json')).toBe(false);
+      expect(isScriptResourceUrl('https://example.com/index.html')).toBe(false);
+      expect(isScriptResourceUrl('https://example.com/')).toBe(false);
     });
   });
 
@@ -386,10 +409,12 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
   describe('4. BoundedCrawler Engine Execution & Bounds Enforcement (crawler.ts)', () => {
     let server: http.Server;
     let serverPort: number;
+    const receivedRequests: { method: string; path: string }[] = [];
 
     beforeAll(async () => {
       server = http.createServer((req, res) => {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        receivedRequests.push({ method: req.method || 'GET', path: url.pathname });
 
         // Mock routes for BFS, bounds, loop detection, and extraction
         if (url.pathname === '/') {
@@ -528,6 +553,103 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
           return;
         }
 
+        if (url.pathname === '/form-remediation-test') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <!DOCTYPE html>
+            <html>
+            <head><title>Form Remediation Test</title></head>
+            <body>
+              <form action="/form-post-endpoint" method="POST">
+                <input type="text" name="secret" value="confidential">
+              </form>
+              <form action="/form-default-endpoint">
+                <input type="text" name="query" value="search-term">
+              </form>
+              <a href="/normal-get-page">Normal Link</a>
+            </body>
+            </html>
+          `);
+          return;
+        }
+
+        if (url.pathname === '/form-post-endpoint') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><head><title>POST Form Target</title></head></html>');
+          return;
+        }
+
+        if (url.pathname === '/form-default-endpoint') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><head><title>Default GET Form Action Page</title></head></html>');
+          return;
+        }
+
+        if (url.pathname === '/normal-get-page') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><head><title>Normal GET Page</title></head></html>');
+          return;
+        }
+
+        if (url.pathname === '/script-remediation-test') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Script Remediation Test</title>
+              <script src="/static/app.js"></script>
+              <script src="/static/worker.mjs"></script>
+              <script src="/static/legacy.cjs"></script>
+            </head>
+            <body>
+              <a href="/api/v1/items">Extensionless API</a>
+              <a href="/data/feed.json">JSON Feed</a>
+            </body>
+            </html>
+          `);
+          return;
+        }
+
+        if (
+          url.pathname === '/static/app.js' ||
+          url.pathname === '/static/worker.mjs' ||
+          url.pathname === '/static/legacy.cjs'
+        ) {
+          res.writeHead(200, { 'Content-Type': 'application/javascript' });
+          res.end('console.log("script resource");');
+          return;
+        }
+
+        if (url.pathname === '/api/v1/items') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ items: [1, 2, 3] }));
+          return;
+        }
+
+        if (url.pathname === '/data/feed.json') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ feed: 'active' }));
+          return;
+        }
+
+        if (url.pathname === '/multibyte-test') {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          // Emojis: 🚀 (4 bytes), 🛸 (4 bytes)
+          // CJK: 漢字 (3 + 3 = 6 bytes)
+          // Accented: é (2 bytes), ü (2 bytes)
+          const content =
+            '<html><head><title>Multibyte 🚀 漢字</title></head><body><p>Text with é and ü and 🛸</p><a href="/after-multibyte">After Multibyte</a></body></html>';
+          res.end(Buffer.from(content, 'utf8'));
+          return;
+        }
+
+        if (url.pathname === '/after-multibyte') {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end('<html><head><title>After Multibyte</title></head></html>');
+          return;
+        }
+
         // Default 404
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('Not Found');
@@ -546,7 +668,7 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
       await new Promise<void>((resolve) => server.close(() => resolve()));
     });
 
-    it('enforces parameter validation on maxDepth, maxPages, maxQueueSize, and timeoutMs', async () => {
+    it('enforces parameter validation on maxDepth, maxPages, maxQueueSize, timeoutMs, and maxResponseSizeBytes', async () => {
       const context = await createTestScanContext({ primaryDomain: 'example.com' });
 
       // maxDepth > 5 is strictly rejected
@@ -564,6 +686,19 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
 
       // timeoutMs validation
       expect(() => new BoundedCrawler(context, { timeoutMs: 50 })).toThrow(/timeoutMs must be an integer >= 100ms/i);
+
+      // maxResponseSizeBytes validation (1 byte to 10MB)
+      expect(() => new BoundedCrawler(context, { maxResponseSizeBytes: 0 })).toThrow(
+        /maxResponseSizeBytes must be an integer between 1 and 10485760/i
+      );
+      expect(() => new BoundedCrawler(context, { maxResponseSizeBytes: -1 })).toThrow(
+        /maxResponseSizeBytes must be an integer between 1 and 10485760/i
+      );
+      expect(() => new BoundedCrawler(context, { maxResponseSizeBytes: 10 * 1024 * 1024 + 1 })).toThrow(
+        /maxResponseSizeBytes must be an integer between 1 and 10485760/i
+      );
+      expect(() => new BoundedCrawler(context, { maxResponseSizeBytes: 10 * 1024 * 1024 })).not.toThrow();
+      expect(() => new BoundedCrawler(context, { maxResponseSizeBytes: 1 })).not.toThrow();
     });
 
     it('traverses pages in strict Breadth-First Search (BFS) order', async () => {
@@ -889,6 +1024,219 @@ describe('Phase 8: Bounded Crawling & Endpoint Discovery Engine (TASK-803)', () 
       expect(result.pages.length).toBe(1);
       expect(result.pages[0].status).toBe(200);
       expect(result.pages[0].title).toBe('Large Page');
+    });
+
+    it('records non-GET form action endpoints but never enqueues or requests them via GET or POST', async () => {
+      const context = await createTestScanContext({
+        primaryDomain: 'target.example.com',
+        allowedPorts: [serverPort],
+      });
+
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      receivedRequests.length = 0;
+
+      const crawler = new BoundedCrawler(context, client, {
+        maxDepth: 2,
+        allowLoopbackForTesting: true,
+      });
+
+      const seedUrl = `http://target.example.com:${serverPort}/form-remediation-test`;
+      const result = await crawler.crawl(seedUrl);
+
+      // 1. POST form action was discovered and recorded as an endpoint with method POST
+      const postUrl = `http://target.example.com:${serverPort}/form-post-endpoint`;
+      expect(result.discoveredUrls).toContain(postUrl);
+
+      const postEndpoint = result.pages[0].discoveredEndpoints.find((e) => e.url === postUrl);
+      expect(postEndpoint).toBeDefined();
+      expect(postEndpoint?.source).toBe('form');
+      expect(postEndpoint?.method).toBe('POST');
+
+      // 2. Default form action (omitted method) defaulted to GET and was enqueued
+      const defaultUrl = `http://target.example.com:${serverPort}/form-default-endpoint`;
+      expect(result.discoveredUrls).toContain(defaultUrl);
+      const defaultEndpoint = result.pages[0].discoveredEndpoints.find((e) => e.url === defaultUrl);
+      expect(defaultEndpoint?.method).toBe('GET');
+
+      // 3. Crawled pages must contain seed, normal-get-page, and default GET form action
+      const crawledUrls = result.pages.map((p) => p.url);
+      expect(crawledUrls).toContain(seedUrl);
+      expect(crawledUrls).toContain(`http://target.example.com:${serverPort}/normal-get-page`);
+      expect(crawledUrls).toContain(defaultUrl);
+
+      // 4. Crawled pages must NEVER contain the POST form action endpoint
+      expect(crawledUrls).not.toContain(postUrl);
+
+      // 5. Inspect actual server requests received: NO request (GET, POST, or otherwise) to /form-post-endpoint
+      const requestsToPostTarget = receivedRequests.filter((r) => r.path === '/form-post-endpoint');
+      expect(requestsToPostTarget).toEqual([]);
+
+      // Verify server received requests for the GET routes only
+      const receivedPaths = receivedRequests.map((r) => r.path);
+      expect(receivedPaths).toContain('/form-remediation-test');
+      expect(receivedPaths).toContain('/normal-get-page');
+      expect(receivedPaths).toContain('/form-default-endpoint');
+    });
+
+    it('discovers script resources (.js, .mjs, .cjs) without consuming crawl page budget, and crawls extensionless/JSON endpoints', async () => {
+      const context = await createTestScanContext({
+        primaryDomain: 'target.example.com',
+        allowedPorts: [serverPort],
+      });
+
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      receivedRequests.length = 0;
+
+      const crawler = new BoundedCrawler(context, client, {
+        maxDepth: 2,
+        maxPages: 10,
+        allowLoopbackForTesting: true,
+      });
+
+      const seedUrl = `http://target.example.com:${serverPort}/script-remediation-test`;
+      const result = await crawler.crawl(seedUrl);
+
+      // 1. Script URLs are recorded in discoveredUrls and discoveredEndpoints
+      const jsUrl = `http://target.example.com:${serverPort}/static/app.js`;
+      const mjsUrl = `http://target.example.com:${serverPort}/static/worker.mjs`;
+      const cjsUrl = `http://target.example.com:${serverPort}/static/legacy.cjs`;
+      const apiUrl = `http://target.example.com:${serverPort}/api/v1/items`;
+      const jsonUrl = `http://target.example.com:${serverPort}/data/feed.json`;
+
+      expect(result.discoveredUrls).toContain(jsUrl);
+      expect(result.discoveredUrls).toContain(mjsUrl);
+      expect(result.discoveredUrls).toContain(cjsUrl);
+      expect(result.discoveredUrls).toContain(apiUrl);
+      expect(result.discoveredUrls).toContain(jsonUrl);
+
+      // 2. Scripts were NOT enqueued or fetched, consuming 0 page crawl budget
+      const crawledUrls = result.pages.map((p) => p.url);
+      expect(crawledUrls).not.toContain(jsUrl);
+      expect(crawledUrls).not.toContain(mjsUrl);
+      expect(crawledUrls).not.toContain(cjsUrl);
+
+      const scriptRequests = receivedRequests.filter((r) =>
+        r.path.includes('/static/')
+      );
+      expect(scriptRequests).toEqual([]);
+
+      // 3. Extensionless and JSON endpoints WERE enqueued and fetched
+      expect(crawledUrls).toContain(apiUrl);
+      expect(crawledUrls).toContain(jsonUrl);
+
+      const crawledApiPage = result.pages.find((p) => p.url === apiUrl);
+      expect(crawledApiPage?.status).toBe(200);
+      expect(crawledApiPage?.contentType).toContain('application/json');
+    });
+
+    it('enforces response parsing byte limit on actual UTF-8 bytes and safely handles truncated multibyte sequences (emojis, CJK, accents)', async () => {
+      const context = await createTestScanContext({
+        primaryDomain: 'target.example.com',
+        allowedPorts: [serverPort],
+      });
+
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      // Set maxResponseSizeBytes small enough to truncate right through multibyte character sequences
+      const crawler = new BoundedCrawler(context, client, {
+        maxDepth: 1,
+        maxResponseSizeBytes: 45, // Deliberately cuts through multibyte title/body UTF-8 sequences
+        allowLoopbackForTesting: true,
+      });
+
+      const seedUrl = `http://target.example.com:${serverPort}/multibyte-test`;
+      const result = await crawler.crawl(seedUrl);
+
+      expect(result.pages.length).toBe(1);
+      expect(result.pages[0].status).toBe(200);
+      // Decoded without throwing; truncated safely with StringDecoder
+      expect(result.pages[0].discoveredEndpoints).toBeDefined();
+    });
+
+    it('isolates callback exceptions in onPageDiscovered, onPageCrawled, and onError without aborting the crawl', async () => {
+      const context = await createTestScanContext({
+        primaryDomain: 'target.example.com',
+        allowedPorts: [serverPort],
+      });
+
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      let discoveredCallbackCalled = false;
+      let errorCallbackCalled = false;
+      let crawledCallbackCalled = false;
+
+      const crawler = new BoundedCrawler(context, client, {
+        maxDepth: 1,
+        allowLoopbackForTesting: true,
+        onPageDiscovered: () => {
+          discoveredCallbackCalled = true;
+          throw new Error('Explosive callback failure in onPageDiscovered');
+        },
+        onPageCrawled: () => {
+          crawledCallbackCalled = true;
+          throw new Error('Explosive callback failure in onPageCrawled');
+        },
+        onError: () => {
+          errorCallbackCalled = true;
+          throw new Error('Explosive callback failure in onError');
+        },
+      });
+
+      // 1. Crawl valid page with discoverable links: callback errors should not abort crawl
+      const seedUrl = `http://target.example.com:${serverPort}/`;
+      const result = await crawler.crawl(seedUrl);
+
+      expect(result.stoppedReason).toBe('COMPLETED');
+      expect(result.pagesCrawled).toBeGreaterThan(0);
+      expect(discoveredCallbackCalled).toBe(true);
+      expect(crawledCallbackCalled).toBe(true);
+
+      // 2. Crawl failing page: onError callback failure should not crash crawl
+      const errorSeed = `http://target.example.com:${serverPort}/error-500`;
+      const crawlerWithError = new BoundedCrawler(context, client, {
+        maxDepth: 0,
+        allowLoopbackForTesting: true,
+        onError: () => {
+          errorCallbackCalled = true;
+          throw new Error('Explosive callback failure in onError');
+        },
+      });
+
+      // Simulate network level failure to trigger onError
+      client.get = async () => {
+        throw new Error('Simulated network disconnect');
+      };
+
+      const errorResult = await crawlerWithError.crawl(errorSeed);
+      expect(errorResult.pagesCrawled).toBe(1);
+      expect(errorResult.pages[0].error).toContain('Simulated network disconnect');
+      expect(errorCallbackCalled).toBe(true);
     });
   });
 });

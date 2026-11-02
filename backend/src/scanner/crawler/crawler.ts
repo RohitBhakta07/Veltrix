@@ -14,6 +14,7 @@
  * - Respects tenant-scoped AbortSignal for emergency sub-500ms shutdown.
  */
 
+import { StringDecoder } from 'node:string_decoder';
 import { SafeHttpClient } from '../transport/safe-http-client.js';
 import {
   type AuthorizedScanScopeContext,
@@ -27,7 +28,11 @@ import type {
   DiscoveredEndpoint,
   LinkSource,
 } from './types.js';
-import { normalizeUrl, isBinaryOrMediaUrl } from './url-normalizer.js';
+import {
+  normalizeUrl,
+  isBinaryOrMediaUrl,
+  isScriptResourceUrl,
+} from './url-normalizer.js';
 import { extractHtmlLinks } from './html-link-extractor.js';
 import { CrawlerScopeGuard } from './scope-guard.js';
 
@@ -47,6 +52,7 @@ export class BoundedCrawler {
   public static readonly ABSOLUTE_MAX_QUEUE_SIZE = 10000;
   public static readonly DEFAULT_TIMEOUT_MS = 10000;
   public static readonly DEFAULT_MAX_RESPONSE_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
+  public static readonly ABSOLUTE_MAX_RESPONSE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB (SafeHttpClient ceiling)
 
   private readonly context: AuthorizedScanScopeContext;
   private readonly client: SafeHttpClient;
@@ -116,8 +122,19 @@ export class BoundedCrawler {
     }
     this.timeoutMs = rawTimeout;
 
-    this.maxResponseSizeBytes =
+    // Validate and enforce maxResponseSizeBytes (default: 2MB, max: 10MB)
+    const rawMaxResponse =
       this.options.maxResponseSizeBytes ?? BoundedCrawler.DEFAULT_MAX_RESPONSE_SIZE_BYTES;
+    if (
+      !Number.isInteger(rawMaxResponse) ||
+      rawMaxResponse < 1 ||
+      rawMaxResponse > BoundedCrawler.ABSOLUTE_MAX_RESPONSE_SIZE_BYTES
+    ) {
+      throw new RangeError(
+        `maxResponseSizeBytes must be an integer between 1 and ${BoundedCrawler.ABSOLUTE_MAX_RESPONSE_SIZE_BYTES} bytes (received ${rawMaxResponse}).`
+      );
+    }
+    this.maxResponseSizeBytes = rawMaxResponse;
 
     // Initialize or assign SafeHttpClient
     this.client =
@@ -227,6 +244,16 @@ export class BoundedCrawler {
           discoveredUrlsMap.set(ep.url, ep);
         }
 
+        // Never enqueue non-GET form actions (e.g. POST, PUT, DELETE)
+        if (ep.source === 'form' && ep.method && ep.method !== 'GET') {
+          continue;
+        }
+
+        // Skip static JavaScript resources from consuming HTML crawl page budget
+        if (ep.source === 'script' || isScriptResourceUrl(ep.url)) {
+          continue;
+        }
+
         // Only enqueue unvisited HTML endpoints for further crawling
         if (!visitedUrls.has(ep.url)) {
           // Skip static binary / media extensions if configured
@@ -249,7 +276,13 @@ export class BoundedCrawler {
           };
           queue.push(queueItem);
 
-          this.options.onPageDiscovered?.(ep.url, queueItem.depth, ep.source);
+          if (this.options.onPageDiscovered) {
+            try {
+              this.options.onPageDiscovered(ep.url, queueItem.depth, ep.source);
+            } catch {
+              // Callback exceptions must not abort an otherwise valid crawl
+            }
+          }
         }
       }
 
@@ -302,12 +335,18 @@ export class BoundedCrawler {
       let discoveredEndpoints: DiscoveredEndpoint[] = [];
 
       // Extract links only from HTML responses
-      if (isHtml && res.text) {
-        // Bounded response processing: truncate HTML parsing if body exceeds maxResponseSizeBytes
-        const htmlToParse =
-          res.text.length > this.maxResponseSizeBytes
-            ? res.text.slice(0, this.maxResponseSizeBytes)
-            : res.text;
+      if (isHtml && (res.rawBody || res.text)) {
+        // Enforce parsing ceiling in actual UTF-8 bytes using res.rawBody
+        const bodyBuffer = res.rawBody || Buffer.from(res.text || '', 'utf8');
+        let htmlToParse = res.text || '';
+
+        if (bodyBuffer.length > this.maxResponseSizeBytes) {
+          const slicedBuffer = bodyBuffer.subarray(0, this.maxResponseSizeBytes);
+          const decoder = new StringDecoder('utf8');
+          htmlToParse = decoder.write(slicedBuffer);
+        } else if (!htmlToParse && bodyBuffer.length > 0) {
+          htmlToParse = bodyBuffer.toString('utf8');
+        }
 
         const extractionResult = extractHtmlLinks(htmlToParse, item.url, item.depth);
         title = extractionResult.title;
@@ -336,7 +375,13 @@ export class BoundedCrawler {
       const durationMs = Date.now() - pageStartTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
 
-      this.options.onError?.(err instanceof Error ? err : new Error(errorMsg), item.url);
+      if (this.options.onError) {
+        try {
+          this.options.onError(err instanceof Error ? err : new Error(errorMsg), item.url);
+        } catch {
+          // Callback exceptions must not abort an otherwise valid crawl
+        }
+      }
 
       return Object.freeze({
         url: item.url,

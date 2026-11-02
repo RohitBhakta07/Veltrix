@@ -81,6 +81,30 @@ export const BINARY_AND_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Static JavaScript resource extensions that should be recorded as discovered endpoints,
+ * but bypassed from consuming the HTML crawl page budget.
+ */
+export const SCRIPT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.js',
+  '.mjs',
+  '.cjs',
+]);
+
+/**
+ * Determines whether a URL points to a static JavaScript resource based on extension.
+ */
+export function isScriptResourceUrl(url: string | URL): boolean {
+  try {
+    const parsed = typeof url === 'string' ? new URL(url) : url;
+    const pathname = parsed.pathname.toLowerCase();
+    const ext = path.extname(pathname);
+    return SCRIPT_EXTENSIONS.has(ext);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Determines whether a URL points to a static media or binary asset based on extension.
  */
 export function isBinaryOrMediaUrl(url: string | URL): boolean {
@@ -178,9 +202,10 @@ export function normalizeUrl(rawUrl: string, baseUrl?: string): string | null {
   }
   parsed.pathname = normalizedPath;
 
-  // 7. Query Parameter Canonicalization
+  // 7. Query Parameter Canonicalization:
+  // Sort distinct keys lexicographically, but preserve original relative order and count of duplicate parameter values.
   const searchParams = parsed.searchParams;
-  const cleanParams: [string, string][] = [];
+  const keyToValues = new Map<string, string[]>();
 
   for (const [key, value] of searchParams.entries()) {
     const lowerKey = key.trim().toLowerCase();
@@ -188,22 +213,24 @@ export function normalizeUrl(rawUrl: string, baseUrl?: string): string | null {
     if (KNOWN_SESSION_QUERY_PARAMS.has(lowerKey)) {
       continue;
     }
-    cleanParams.push([key, value]);
+    const existing = keyToValues.get(key);
+    if (existing) {
+      existing.push(value);
+    } else {
+      keyToValues.set(key, [value]);
+    }
   }
 
-  // Sort deterministically: by key ascending, then by value ascending
-  cleanParams.sort((a, b) => {
-    const keyCompare = a[0].localeCompare(b[0]);
-    if (keyCompare !== 0) return keyCompare;
-    return a[1].localeCompare(b[1]);
-  });
-
-  if (cleanParams.length === 0) {
+  if (keyToValues.size === 0) {
     parsed.search = '';
   } else {
+    const sortedKeys = Array.from(keyToValues.keys()).sort((a, b) => a.localeCompare(b));
     const newParams = new URLSearchParams();
-    for (const [k, v] of cleanParams) {
-      newParams.append(k, v);
+    for (const key of sortedKeys) {
+      const values = keyToValues.get(key)!;
+      for (const val of values) {
+        newParams.append(key, val);
+      }
     }
     parsed.search = newParams.toString();
   }

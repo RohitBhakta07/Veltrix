@@ -199,7 +199,8 @@ export function extractHtmlLinks(
       action = pageUrl;
     }
 
-    const method = extractAttribute(formTagAttributes, 'method') || 'GET';
+    const rawMethod = extractAttribute(formTagAttributes, 'method');
+    const method = rawMethod && rawMethod.trim().length > 0 ? rawMethod.trim().toUpperCase() : 'GET';
 
     // Extract inputs within this form
     const formFields: FormField[] = [];
