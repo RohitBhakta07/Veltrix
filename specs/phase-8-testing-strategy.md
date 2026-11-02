@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Testing Strategy — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.1.0 (Architecture Review Hardened)  
+**Document Version:** 1.2.0 (PR #17 Architecture Reconciliation Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Quality Assurance & Security Validation  
-**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
+**Status:** IN REVIEW (PR #17 Architecture Reconciliation)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -69,8 +69,31 @@ pie title Phase 8 Test Distribution
   - Regex match (`^/admin/.*`) $\to$ dropped.
   - Query parameter edge cases (`/app?next=/logout`) $\to$ path normalized and evaluated safely.
 
-### 3.3 Safe HTTP Transport & SSRF Filter Tests (`tests/unit/safe-http-client.test.ts`)
-- Comprehensive IP Address Denylist Matrix:
+### 3.3 Safe HTTP Transport & SSRF Filter Tests (`backend/tests/scanner/safe-transport.test.ts`)
+- **ScopeGuard Boundary Decoupling (`VerificationScopeGuard` vs. `AuthorizedScanScopeGuard`):**
+  - **VerificationScopeGuard Path Whitelisting:**
+    - Path 1: `/.well-known/veltrix-challenge/<token>` allowed on pending asset (verifies zero circular dependency).
+    - Path 2: `/` (root HTML meta-tag retrieval) allowed on pending asset.
+    - Arbitrary Paths: Requests to `/admin`, `/api/v1/users`, or path traversal sequences (`/../`) on a pending asset are strictly rejected with `VERIFICATION_PATH_UNAUTHORIZED`.
+    - Redirect Rejection: Any 3xx response during verification fails closed with `REDIRECT_PROHIBITED_FOR_VERIFICATION` (`maxRedirects = 0`).
+  - **AuthorizedScanScopeGuard Verification Preconditions:**
+    - Rejects scan requests if asset status is `GRACE_PERIOD`, `EXPIRED`, `SUSPENDED`, or `REVOKED`, or if `scanBlocked: true`.
+    - Authorization check runs **before** DNS resolution and before socket connection.
+    - Rejects attempts by callers to supply forged or unverified authorization context tokens.
+  - **Exact Approved Subdomain Allowlisting:**
+    - Outbound requests to verified `primaryDomain` and exact entries in `approvedSubdomains` (e.g. `api.example.com`) are permitted.
+    - Wildcard subdomains (e.g. `*.example.com`) are **strictly prohibited**; every subdomain must be explicitly registered.
+    - Unapproved subdomains (e.g. `internal.example.com`) are dropped immediately before DNS lookup.
+  - **Path Exclusions:**
+    - Paths matching regex in `excludedPaths` (e.g., `^/auth/logout`) are dropped before dispatch.
+- **Outbound Port Policy & Safety Precedence:**
+  - Standard ports: HTTP (`80`) and HTTPS (`443`) permitted by default.
+  - Non-standard ports (e.g., `8080`, `8443`) rejected by default; permitted only with explicit server-side authorization.
+  - **Inviolable Denylist Precedence:** High-risk internal ports (22, 25, 3306, 5432, 6379, 27017, etc.) and private/internal IP destinations are **categorically barred** by transport security filters and can **never** be permitted via asset port allowlists.
+- **HTTP Method Policy:**
+  - `GET` and `HEAD` requests permitted by default.
+  - `DELETE`, `PUT`, `PATCH`, and `POST` rejected with `METHOD_NOT_PERMITTED` unless an explicit probe authorization policy is attached.
+- **Comprehensive IP Address Denylist Matrix:**
   | Input | Representation | Classification | Expected Result |
   | :--- | :--- | :--- | :--- |
   | `127.0.0.1` | Standard IPv4 | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
@@ -91,17 +114,37 @@ pie title Phase 8 Test Distribution
   | `::ffff:127.0.0.1` | IPv4-Mapped IPv6 | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
   | `::ffff:169.254.169.254` | IPv4-Mapped IPv6 | AWS Metadata | **REJECTED (`SSRF_BLOCKED`)** |
   | `[fd00:ec2::254]` | IPv6 | AWS IMDSv6 | **REJECTED (`SSRF_BLOCKED`)** |
+  | `4000::1` | IPv6 | Unallocated Non-2000::/3 | **REJECTED (`SSRF_BLOCKED`)** |
+  | `fe00::1` | IPv6 | Reserved Non-2000::/3 | **REJECTED (`SSRF_BLOCKED`)** |
+  | `::8.8.8.8` | IPv6 | Deprecated IPv4-Compatible | **REJECTED (`SSRF_BLOCKED`)** |
+  | `2001:4860:1:2:3:4:5:6::` | IPv6 | Malformed Zero-Compression | **REJECTED (`SSRF_BLOCKED`)** |
+  | `fe80::1%eth0` | IPv6 | Scoped Zone Identifier | **REJECTED (`SSRF_BLOCKED`)** |
+  | `2002:7f00:0001::` | IPv6 (6to4) | Embedded Loopback 127.0.0.1 | **REJECTED (`SSRF_BLOCKED`)** |
+  | `2002:a9fe:a9fe::` | IPv6 (6to4) | Embedded IMDS 169.254.169.254 | **REJECTED (`SSRF_BLOCKED`)** |
   | `93.184.216.34` | Standard IPv4 | Public Internet IP | **ALLOWED** |
-  | `2606:2800:220:1:248:1893:25c8:1946` | Standard IPv6 | Public Internet IP | **ALLOWED** |
+  | `2606:2800:220:1:248:1893:25c8:1946` | Standard IPv6 | Public Global Unicast | **ALLOWED** |
+  | `2002:5db8:d822::1` | IPv6 (6to4) | Embedded Public 93.184.216.34 | **ALLOWED** |
 - **Proxy Isolation Test:**
-  - Set `HTTP_PROXY=http://127.0.0.1:8080` in environment.
+  - Set `HTTP_PROXY=http://127.0.0.1:8080` and `HTTPS_PROXY=http://127.0.0.1:8080` in environment.
   - Verify `SafeHttpClient` bypasses proxy and connects directly to destination socket, preventing proxy-based SSRF.
+- **Connection Reuse Isolation:**
+  - Verify `keepAlive: false` and `Connection: close` are sent by default.
+  - Verify sockets are never reused across requests from different tenants or scan scopes.
 
-### 3.4 Hop-by-Hop Redirect Tests (`tests/unit/redirects.test.ts`)
-- Redirect chain: `https://site.com/start` $\to$ `https://site.com/middle` $\to$ `https://site.com/end` $\to$ followed up to 5 hops.
-- Redirect loop: `A` $\to$ `B` $\to$ `A` $\to$ halts at 5 hops with `REDIRECT_LIMIT_EXCEEDED`.
-- Redirect escape to AWS metadata: `https://site.com/auth` $\to$ `302 Location: http://169.254.169.254/latest/meta-data` $\to$ caught at hop 1, connection aborted, returns `SSRF_BLOCKED`.
-- Cross-origin redirect escape: `https://site.com/out` $\to$ `302 Location: https://unauthorized-domain.com` $\to$ dropped by `ScopeGuard`.
+### 3.4 Hop-by-Hop Redirect Tests (`backend/tests/scanner/redirects.test.ts`)
+- **Default Redirect Behavior:** When `maxRedirects` is not explicitly configured, verify client defaults to `0` redirects (returns 3xx response as-is).
+- **Legitimate Redirect Chain:** `https://site.com/start` $\to$ `https://site.com/middle` $\to$ `https://site.com/end` $\to$ successfully followed up to 5 hops when redirect policy is active.
+- **Max Hop Ceiling:** Chain with 6 hops $\to$ halts with `MAX_REDIRECTS_EXCEEDED`.
+- **Redirect Loop:** `A` $\to$ `B` $\to$ `A` $\to$ halts with `REDIRECT_LOOP_DETECTED`.
+- **SSRF Redirect Escapes:**
+  - `https://site.com/auth` $\to$ `302 Location: http://169.254.169.254/latest/meta-data` $\to$ caught at hop 1 before connecting, returns `SSRF_BLOCKED`.
+  - `https://site.com/api` $\to$ `302 Location: http://127.0.0.1:8080/admin` $\to$ caught at hop 1, returns `SSRF_BLOCKED`.
+  - `https://site.com/test` $\to$ `302 Location: http://[::1]/` $\to$ caught at hop 1, returns `SSRF_BLOCKED`.
+- **Scope & Cross-Tenant Escapes:**
+  - Cross-origin redirect to unapproved domain: `https://site.com/out` $\to$ `302 Location: https://attacker.com` $\to$ blocked by `AuthorizedScanScopeGuard` before DNS resolution.
+  - Cross-subdomain redirect to approved subdomain: `https://site.com/app` $\to$ `302 Location: https://api.site.com` $\to$ allowed, but sensitive headers (`Authorization`, `Cookie`, and tenant-specific custom headers) are stripped.
+- **Protocol Downgrade Ban:**
+  - `https://site.com/secure` $\to$ `302 Location: http://site.com/insecure` $\to$ rejected immediately with `PROTOCOL_DOWNGRADE_BLOCKED`.
 
 ### 3.5 Bounded Crawler Tests (`tests/unit/crawler.test.ts`)
 - Extracts valid links from HTML `<a>`, `<form action>`, `<script src>`, `<link href>`.
@@ -144,29 +187,48 @@ pie title Phase 8 Test Distribution
   - The second DNS resolution is never triggered during connection establishment.
   - Rebinding attack is completely mitigated.
 
-### 4.2 Decompression Bomb / Zip Bomb Harness (`tests/security/zip-bomb.test.ts`)
-- **Test Setup:**
+### 4.2 Decompression Bomb / Zip Bomb & Resource Limit Harness (`backend/tests/scanner/zip-bomb.test.ts`)
+- **Uncompressed Body Between 2 MB and 10 MB (Allowed):**
+  - In-process HTTP server serves a 5 MB uncompressed JSON/HTML payload (identity encoding, no compression headers).
+  - Stream and body parser receive all 5 MB cleanly; confirms that the 2 MB compressed-only limit is **not** accidentally applied to uncompressed responses.
+- **Raw Compressed Wire Data Ceiling (2 MB):**
+  - Server streams 3 MB of random gzip-compressed data.
+  - Stream terminates immediately at 2 MB compressed ceiling with `MAX_RESPONSE_SIZE_EXCEEDED` before decompression completes.
+- **Decompressed Size Ceiling (10 MB):**
   - In-process HTTP server serves a small 10 KB gzip stream that decompresses into 500 MB of zeros.
-- **Assertion:**
-  - Decompression stream reader monitors byte throughput.
-  - Exactly at 10 MB uncompressed threshold, stream is terminated with `STREAM_SIZE_LIMIT_EXCEEDED`.
-  - Process memory remains bounded (<100 MB delta); scanner does not crash.
+  - Exactly at 10 MB uncompressed threshold, decompressor stream and underlying socket are destroyed with `MAX_RESPONSE_SIZE_EXCEEDED`.
+  - Process memory remains bounded (<100 MB delta); worker does not crash.
+- **Compression Expansion Ratio Ceiling (100:1):**
+  - In-process server sends a stream with 200:1 expansion ratio.
+  - Stream transform terminates with `DECOMPRESSION_BOMB_DETECTED` after exceeding the 100:1 expansion limit (evaluated after 64 KB warm-up).
+- **Chunked Transfer Encoding Without Content-Length:**
+  - Server returns `Transfer-Encoding: chunked` without `Content-Length` header.
+  - Streamed byte counter tracks chunks continuously and enforces the 10 MB uncompressed limit reliably.
+- **Malformed & Unsupported Content-Encoding:**
+  - Server sends invalid gzip header or unsupported compression algorithm (`content-encoding: zstd`).
+  - Client safely fails closed without unhandled exceptions, socket leaks, or process crash.
 
-### 4.3 Slowloris / Hung Socket Harness (`tests/security/slowloris.test.ts`)
+### 4.3 Slowloris / Hung Socket Harness (`backend/tests/scanner/slowloris.test.ts`)
 - **Test Setup:**
   - In-process HTTP server accepts connection, sends 1 byte of header every 5 seconds.
 - **Assertion:**
   - Connection/header timeout triggers at 10 seconds.
   - Socket is destroyed (`socket.destroy()`); worker moves to next endpoint without blocking.
 
-### 4.4 Emergency Abort Latency Benchmark (`tests/security/abort-latency.test.ts`)
-- **Test Setup:**
-  - Launch active scan against a mock server running 20 long-polling endpoints.
-  - Issue `POST /api/v1/scans/:scanId/abort`.
-- **Assertion:**
-  - High-resolution timer measures duration until all sockets are closed.
-  - Measured latency must be **< 500 ms**.
-  - Scan status in store reflects `ABORTED`.
+### 4.4 Emergency Abort Latency & Tenant Isolation Benchmark (`backend/tests/scanner/abort-latency.test.ts`)
+- **Explicit Tenant Identity Contract (`abortScan(orgId, scanId)`):**
+  - Verify internal abort signature requires both organization ID and scan ID: `abortScan(orgId: string, scanId: string): number`.
+- **Adversarial Identifier Collision Setup:**
+  - Launch Scan A for Tenant `org-alpha` with scan ID `scan-collision-001` (10 long-polling sockets).
+  - Launch Scan B for Tenant `org-bravo` with identical scan ID `scan-collision-001` (10 long-polling sockets) concurrently.
+- **Execution & Invariant Verification:**
+  - Invoke `abortScan('org-alpha', 'scan-collision-001')`.
+  - High-resolution timer verifies that all sockets for Tenant `org-alpha` are closed in **< 500 ms** SLO.
+  - Scan A status reflects `ABORTED`.
+  - **Inviolable Multi-Tenant Isolation Invariant:** All 10 sockets for Tenant `org-bravo` remain active, connected, and completely healthy. Zero cross-tenant socket termination occurs.
+  - Active socket registry confirms 0 leaked sockets for Tenant `org-alpha`.
+- **Intra-Tenant Concurrency Isolation:**
+  - Verify that aborting `scan-1` for Tenant `org-alpha` does not terminate concurrent sockets for `scan-2` under `org-alpha`.
 
 ---
 
