@@ -4,7 +4,7 @@ import {
   SafeHttpClient,
   DnsResolver,
 } from '../../src/scanner/transport/index.js';
-import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
+import { createAuthorizedScanScopeContext } from './helpers/test-context-helper.js';
 
 describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
   it('mitigates DNS rebinding via pre-flight DNS pinning and prevents TOCTOU secondary lookup', async () => {
@@ -48,7 +48,7 @@ describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
       socketConnector: mockConnector,
     });
 
-    const context = createAuthorizedScanScopeContext({
+    const context = await createAuthorizedScanScopeContext({
       orgId: 'org-enterprise-01',
       scanId: 'scan-001',
       siteId: 'site-001',

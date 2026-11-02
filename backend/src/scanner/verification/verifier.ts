@@ -65,6 +65,15 @@ export class DomainOwnershipVerifier {
       fetcher = dnsResolverOrOptions.httpFetcher || httpFetcherArg;
     }
 
+    if (process.env.NODE_ENV === 'production') {
+      if (resolver) {
+        throw new Error('FATAL_SECURITY_ERROR: Injected DnsResolver is prohibited in production.');
+      }
+      if (fetcher) {
+        throw new Error('FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production.');
+      }
+    }
+
     this.dnsVerifier = new DnsVerifier(resolver || new DefaultDnsResolver());
     const finalFetcher = fetcher || new SafeVerificationHttpFetcher();
     this.httpVerifier = new HttpVerifier(finalFetcher);
@@ -253,14 +262,14 @@ export class DomainOwnershipVerifier {
       const expectedUrl = site.httpChallenge.url;
       const expectedToken = site.httpChallenge.expectedBody.veltrixChallengeToken;
       const expectedOrgId = site.httpChallenge.expectedBody.orgId;
-      const verificationContext = createAuthoritativeVerificationScopeContext(site);
+      const verificationContext = await createAuthoritativeVerificationScopeContext(this.storage, { orgId, siteId });
       const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     } else if (method === 'META_TAG') {
       const targetUrl = `https://${site.primaryDomain.toLowerCase().trim()}/`;
       const expectedToken = site.verificationToken;
-      const verificationContext = createAuthoritativeVerificationScopeContext(site);
+      const verificationContext = await createAuthoritativeVerificationScopeContext(this.storage, { orgId, siteId });
       const res = await this.metaVerifier.verify(targetUrl, expectedToken, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';

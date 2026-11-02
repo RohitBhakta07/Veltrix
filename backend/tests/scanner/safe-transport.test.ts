@@ -15,15 +15,20 @@ import {
   SafeVerificationHttpFetcher,
 } from '../../src/scanner/transport/index.js';
 import {
-  createAuthorizedScanScopeContext,
-  createVerificationScopeContext,
   createAuthoritativeScanScopeContext,
   createAuthoritativeVerificationScopeContext,
-  createInternalScanContext,
-  createInternalVerificationContext,
   isTrustedScopeContext,
 } from '../../src/scanner/transport/context-authority.js';
-import { DefaultHttpFetcher } from '../../src/scanner/verification/http-verifier.js';
+import {
+  createAuthorizedScanScopeContext,
+  createVerificationScopeContext,
+  createTestScanContext,
+  createTestVerificationContext,
+} from './helpers/test-context-helper.js';
+import { DefaultHttpFetcher, HttpVerifier } from '../../src/scanner/verification/http-verifier.js';
+import { MetaVerifier } from '../../src/scanner/verification/meta-verifier.js';
+import { DomainOwnershipVerifier } from '../../src/scanner/verification/verifier.js';
+import { MemoryStore } from '../../src/storage/memory-store.js';
 import type { WebsiteAsset } from '@veltrix/shared';
 
 describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
@@ -82,6 +87,8 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
   });
 
   afterAll(async () => {
+    localHttpServer.closeAllConnections?.();
+    localHttpsServer.closeAllConnections?.();
     await new Promise<void>((resolve) => localHttpServer.close(() => resolve()));
     await new Promise<void>((resolve) => localHttpsServer.close(() => resolve()));
   });
@@ -391,7 +398,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       const res = await client.get(`http://primary.example.com:${localHttpPort}/test-socket`, {
         allowLoopbackForTesting: true,
-        context: createAuthorizedScanScopeContext({
+        context: await createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -424,7 +431,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       await expect(
         client.get('http://dualstack.example.com/', {
-          context: createAuthorizedScanScopeContext({
+          context: await createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -457,7 +464,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
         const res = await client.get(`http://primary.example.com:${localHttpPort}/proxy-bypass-test`, {
           allowLoopbackForTesting: true,
-          context: createAuthorizedScanScopeContext({
+          context: await createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -499,7 +506,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       await expect(
         client.get('https://secure.example.com/', {
-          context: createAuthorizedScanScopeContext({
+          context: await createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -533,7 +540,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         client.get(`http://primary.example.com:${localHttpPort}/slow-headers`, {
           signal: controller.signal,
           allowLoopbackForTesting: true,
-          context: createAuthorizedScanScopeContext({
+          context: await createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -563,7 +570,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         client.get(`http://primary.example.com:${localHttpPort}/slow-headers`, {
           timeoutMs: 50,
           allowLoopbackForTesting: true,
-          context: createAuthorizedScanScopeContext({
+          context: await createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -642,7 +649,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       };
 
       const client = new SafeHttpClient({ dnsResolver: maliciousResolver });
-      const context = createAuthorizedScanScopeContext({
+      const context = await createAuthorizedScanScopeContext({
         orgId: 'org-1',
         scanId: 'scan-1',
         siteId: 'site-1',
@@ -670,7 +677,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       };
 
       const client = new SafeHttpClient({ dnsResolver: spoofResolver });
-      const context = createAuthorizedScanScopeContext({
+      const context = await createAuthorizedScanScopeContext({
         orgId: 'org-1',
         scanId: 'scan-1',
         siteId: 'site-1',
@@ -724,7 +731,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       });
 
       const fetcher = new SafeVerificationHttpFetcher({ client, allowLoopbackForTesting: true });
-      const trustedContext = createVerificationScopeContext({
+      const trustedContext = await createVerificationScopeContext({
         primaryDomain: 'legitimate.com',
         activeToken: 'vltx_tok_1234567890abcdef1234567890abcdef',
         orgId: 'org-1',
@@ -744,12 +751,12 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       await expect(
         fetcher.fetch('http://target.com/.well-known/veltrix-challenge/token123')
-      ).rejects.toThrow(/SafeVerificationHttpFetcher requires trusted asset context/i);
+      ).rejects.toThrow(/SafeVerificationHttpFetcher requires a pre-validated authoritative VerificationScopeContext/i);
     });
 
     it('rejects URLs with embedded user credentials (SSRF credential injection)', async () => {
       const client = new SafeHttpClient();
-      const context = createAuthorizedScanScopeContext({
+      const context = await createAuthorizedScanScopeContext({
         orgId: 'org-1',
         scanId: 'scan-1',
         siteId: 'site-1',
@@ -766,7 +773,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
     it('rejects caller-supplied Host header that does not match validated target authority', async () => {
       const client = new SafeHttpClient();
-      const context = createAuthorizedScanScopeContext({
+      const context = await createAuthorizedScanScopeContext({
         orgId: 'org-1',
         scanId: 'scan-1',
         siteId: 'site-1',
@@ -804,7 +811,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           allowLoopbackForTesting: true,
         });
 
-        const context = createAuthorizedScanScopeContext({
+        const context = await createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -860,7 +867,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           allowLoopbackForTesting: true,
         });
 
-        const context = createAuthorizedScanScopeContext({
+        const context = await createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -910,7 +917,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           allowLoopbackForTesting: true,
         });
 
-        const context = createAuthorizedScanScopeContext({
+        const context = await createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -955,7 +962,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           allowLoopbackForTesting: true,
         });
 
-        const context = createAuthorizedScanScopeContext({
+        const context = await createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -1021,33 +1028,31 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       allowedMethods: ['GET', 'POST'],
     };
 
-    it('proves isTrustedScopeContext accepts only authoritatively minted contexts via private registry', () => {
-      const authScan = createAuthoritativeScanScopeContext(validAsset, validScanDesc);
-      const authVerif = createAuthoritativeVerificationScopeContext(validAsset);
-      const internalScan = createInternalScanContext({
-        orgId: 'org-1',
-        scanId: 'scan-1',
-        siteId: 'site-1',
-        primaryDomain: 'example.com',
-        status: 'VERIFIED',
-        scanBlocked: false,
-        expiresAt: Date.now() + 60000,
+    it('proves isTrustedScopeContext accepts only authoritatively minted contexts via private registry', async () => {
+      const store = new MemoryStore();
+      await store.saveWebsite(validAsset);
+
+      const authScan = await createAuthoritativeScanScopeContext(store, {
+        orgId: validAsset.orgId,
+        siteId: validAsset.siteId,
+        scanId: validScanDesc.scanId,
+        allowedPorts: validScanDesc.allowedPorts,
+        allowedMethods: validScanDesc.allowedMethods,
       });
-      const internalVerif = createInternalVerificationContext({
-        primaryDomain: 'example.com',
-        activeToken: 'tok-123',
+      const authVerif = await createAuthoritativeVerificationScopeContext(store, {
+        orgId: validAsset.orgId,
+        siteId: validAsset.siteId,
       });
 
       expect(isTrustedScopeContext(authScan)).toBe(true);
       expect(isTrustedScopeContext(authVerif)).toBe(true);
-      expect(isTrustedScopeContext(internalScan)).toBe(true);
-      expect(isTrustedScopeContext(internalVerif)).toBe(true);
 
       // Rejection of forged objects and Symbol spoofing
       expect(isTrustedScopeContext(null)).toBe(false);
       expect(isTrustedScopeContext(undefined)).toBe(false);
       expect(isTrustedScopeContext({})).toBe(false);
       expect(isTrustedScopeContext({ ...authScan })).toBe(false); // cloned object loses WeakSet identity
+      expect(isTrustedScopeContext(Object.create(authScan))).toBe(false); // prototype manipulation
       expect(isTrustedScopeContext({ [Symbol.for('TRUSTED_SCOPE_BRAND')]: true })).toBe(false);
       expect(isTrustedScopeContext(JSON.parse(JSON.stringify(authScan)))).toBe(false);
     });
@@ -1103,203 +1108,194 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       expect(dnsResolved).toBe(false);
     });
 
-    it('createAuthoritativeScanScopeContext enforces server-side verification status invariants', () => {
-      // Pending
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, status: 'PENDING_VERIFICATION' },
-          validScanDesc
-        )
-      ).toThrow(/has not completed ownership verification/i);
+    it('createAuthoritativeScanScopeContext enforces server-side verification status invariants', async () => {
+      const statuses: WebsiteAsset['status'][] = [
+        'PENDING_VERIFICATION',
+        'GRACE_PERIOD',
+        'SUSPENDED',
+        'EXPIRED',
+        'REVOKED',
+      ];
 
-      // Grace period
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, status: 'GRACE_PERIOD' },
-          validScanDesc
-        )
-      ).toThrow(/Active scans are suspended/i);
+      for (const status of statuses) {
+        const store = new MemoryStore();
+        await store.saveWebsite({ ...validAsset, status });
 
-      // Suspended
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, status: 'SUSPENDED' },
-          validScanDesc
-        )
-      ).toThrow(/Active scans are suspended/i);
-
-      // Expired
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, status: 'EXPIRED' },
-          validScanDesc
-        )
-      ).toThrow(/has not completed ownership verification/i);
-
-      // Revoked
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, status: 'REVOKED' },
-          validScanDesc
-        )
-      ).toThrow(/has not completed ownership verification/i);
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: validScanDesc.scanId,
+          })
+        ).rejects.toThrow(
+          status === 'GRACE_PERIOD' || status === 'SUSPENDED'
+            ? /Active scans are suspended/i
+            : /has not completed ownership verification/i
+        );
+      }
     });
 
-    it('createAuthoritativeScanScopeContext enforces scanBlocked invariant', () => {
+    it('createAuthoritativeScanScopeContext enforces scanBlocked invariant', async () => {
       // scanBlocked === true
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, scanBlocked: true },
-          validScanDesc
-        )
-      ).toThrow(/scanBlocked set to true or undefined/i);
+      const store1 = new MemoryStore();
+      await store1.saveWebsite({ ...validAsset, scanBlocked: true });
+      await expect(
+        createAuthoritativeScanScopeContext(store1, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/scanBlocked set to true or undefined/i);
 
       // scanBlocked === undefined
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, scanBlocked: undefined as any },
-          validScanDesc
-        )
-      ).toThrow(/scanBlocked set to true or undefined/i);
+      const store2 = new MemoryStore();
+      await store2.saveWebsite({ ...validAsset, scanBlocked: undefined as any });
+      await expect(
+        createAuthoritativeScanScopeContext(store2, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/scanBlocked set to true or undefined/i);
     });
 
-    it('createAuthoritativeScanScopeContext enforces finite future expiresAt invariant', () => {
+    it('createAuthoritativeScanScopeContext enforces finite future expiresAt invariant', async () => {
       // Missing expiresAt
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, expiresAt: undefined },
-          validScanDesc
-        )
-      ).toThrow(/verification timestamp is missing or malformed/i);
+      const store1 = new MemoryStore();
+      await store1.saveWebsite({ ...validAsset, expiresAt: undefined as any });
+      await expect(
+        createAuthoritativeScanScopeContext(store1, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/verification timestamp is missing or malformed/i);
 
       // Non-date string
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, expiresAt: 'not-a-valid-date' },
-          validScanDesc
-        )
-      ).toThrow(/expired at|invalid/i);
+      const store2 = new MemoryStore();
+      await store2.saveWebsite({ ...validAsset, expiresAt: 'not-a-valid-date' });
+      await expect(
+        createAuthoritativeScanScopeContext(store2, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/expired at|invalid/i);
 
       // Past timestamp
+      const store3 = new MemoryStore();
       const pastDate = new Date(Date.now() - 60000).toISOString();
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, expiresAt: pastDate },
-          validScanDesc
-        )
-      ).toThrow(/expired at/i);
+      await store3.saveWebsite({ ...validAsset, expiresAt: pastDate });
+      await expect(
+        createAuthoritativeScanScopeContext(store3, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/expired at/i);
     });
 
-    it('createAuthoritativeScanScopeContext enforces non-empty trimmed identity strings', () => {
+    it('createAuthoritativeScanScopeContext enforces non-empty trimmed identity strings and valid subdomains', async () => {
+      const store = new MemoryStore();
+      await store.saveWebsite(validAsset);
+
       // Empty orgId
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, orgId: '   ' },
-          validScanDesc
-        )
-      ).toThrow(/must be non-empty strings/i);
+      await expect(
+        createAuthoritativeScanScopeContext(store, {
+          orgId: '   ',
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/must be non-empty strings/i);
 
       // Empty siteId
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, siteId: '' },
-          validScanDesc
-        )
-      ).toThrow(/must be non-empty strings/i);
+      await expect(
+        createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: '',
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/must be non-empty strings/i);
 
       // Empty scanId
-      expect(() =>
-        createAuthoritativeScanScopeContext(validAsset, {
-          ...validScanDesc,
+      await expect(
+        createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
           scanId: '   ',
         })
-      ).toThrow(/must be non-empty strings/i);
+      ).rejects.toThrow(/must be non-empty strings/i);
 
-      // Empty primaryDomain
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, primaryDomain: '' },
-          validScanDesc
-        )
-      ).toThrow(/must be non-empty strings/i);
+      // Empty primaryDomain in stored asset
+      const storeEmptyDomain = new MemoryStore();
+      await storeEmptyDomain.saveWebsite({ ...validAsset, primaryDomain: '' });
+      await expect(
+        createAuthoritativeScanScopeContext(storeEmptyDomain, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/Primary domain is missing in authoritative asset/i);
 
-      // Invalid approvedSubdomains
-      expect(() =>
-        createAuthoritativeScanScopeContext(
-          { ...validAsset, approvedSubdomains: ['valid.com', '  '] },
-          validScanDesc
-        )
-      ).toThrow(/contain invalid or empty domain strings/i);
+      // Invalid approvedSubdomains in stored asset
+      const storeInvalidSub = new MemoryStore();
+      await storeInvalidSub.saveWebsite({ ...validAsset, approvedSubdomains: ['valid.com', '  '] });
+      await expect(
+        createAuthoritativeScanScopeContext(storeInvalidSub, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/contain invalid or empty domain strings/i);
+
+      // Non-existent asset in storage
+      const storeNotFound = new MemoryStore();
+      await expect(
+        createAuthoritativeScanScopeContext(storeNotFound, {
+          orgId: 'org-missing',
+          siteId: 'site-missing',
+          scanId: 'scan-1',
+        })
+      ).rejects.toThrow(/not found in authoritative storage/i);
     });
 
-    it('createInternalScanContext rejects invalid timestamps, non-finite values, and non-verified states', () => {
-      const baseParams = {
-        orgId: 'org-test',
-        scanId: 'scan-test',
-        siteId: 'site-test',
-        primaryDomain: 'test.com',
-        status: 'VERIFIED' as const,
-        scanBlocked: false,
-        expiresAt: Date.now() + 100000,
-      };
+    it('createAuthoritativeVerificationScopeContext validates required domain and token', async () => {
+      const store1 = new MemoryStore();
+      await store1.saveWebsite({
+        ...validAsset,
+        primaryDomain: '',
+        verificationToken: 'tok',
+      });
+      await expect(
+        createAuthoritativeVerificationScopeContext(store1, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+        })
+      ).rejects.toThrow(/Primary domain is missing in authoritative asset/i);
 
-      // NaN expiresAt
-      expect(() =>
-        createInternalScanContext({ ...baseParams, expiresAt: NaN })
-      ).toThrow(/timestamp is invalid or expired/i);
+      const store2 = new MemoryStore();
+      await store2.saveWebsite({
+        ...validAsset,
+        primaryDomain: 'example.com',
+        verificationToken: '   ',
+      });
+      await expect(
+        createAuthoritativeVerificationScopeContext(store2, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+        })
+      ).rejects.toThrow(/Active verification token is missing in authoritative asset/i);
 
-      // Infinity expiresAt
-      expect(() =>
-        createInternalScanContext({ ...baseParams, expiresAt: Infinity })
-      ).toThrow(/timestamp is invalid or expired/i);
-
-      // Negative expiresAt
-      expect(() =>
-        createInternalScanContext({ ...baseParams, expiresAt: -100 })
-      ).toThrow(/timestamp is invalid or expired/i);
-
-      // Past expiresAt
-      expect(() =>
-        createInternalScanContext({ ...baseParams, expiresAt: Date.now() - 5000 })
-      ).toThrow(/timestamp is invalid or expired/i);
-
-      // Missing primaryDomain
-      expect(() =>
-        createInternalScanContext({ ...baseParams, primaryDomain: '  ' })
-      ).toThrow(/must be non-empty strings/i);
-
-      // Invalid status
-      expect(() =>
-        createInternalScanContext({ ...baseParams, status: 'EXPIRED' as any })
-      ).toThrow(/has not completed ownership verification/i);
-
-      // scanBlocked: true
-      expect(() =>
-        createInternalScanContext({ ...baseParams, scanBlocked: true })
-      ).toThrow(/scanBlocked set to true/i);
-    });
-
-    it('createAuthoritativeVerificationScopeContext validates required domain and token', () => {
-      expect(() =>
-        createAuthoritativeVerificationScopeContext({
-          primaryDomain: '',
-          verificationToken: 'tok',
-        } as any)
-      ).toThrow(/Primary domain is required/i);
-
-      expect(() =>
-        createAuthoritativeVerificationScopeContext({
-          primaryDomain: 'example.com',
-          verificationToken: '   ',
-        } as any)
-      ).toThrow(/Active verification token is required/i);
-
-      const ctx = createAuthoritativeVerificationScopeContext({
+      const store3 = new MemoryStore();
+      await store3.saveWebsite({
+        ...validAsset,
         primaryDomain: 'Example.COM',
         verificationToken: 'vltx_tok_123',
-        orgId: 'org-1',
-        siteId: 'site-1',
-      } as any);
+      });
+      const ctx = await createAuthoritativeVerificationScopeContext(store3, {
+        orgId: validAsset.orgId,
+        siteId: validAsset.siteId,
+      });
 
       expect(ctx.primaryDomain).toBe('example.com');
       expect(ctx.activeToken).toBe('vltx_tok_123');
@@ -1307,54 +1303,66 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
     });
 
     describe('Protocol-Specific Standard Port Policy (Issue 5)', () => {
-      const getScanContextWithPorts = (allowedPorts?: number[]) =>
-        createAuthoritativeScanScopeContext(validAsset, {
+      const getScanContextWithPorts = async (allowedPorts?: number[]) => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+        return createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
           scanId: 'scan-ports-001',
           allowedPorts,
         });
+      };
 
-      it('rejects port 443 over plaintext HTTP as non-standard without explicit authorization', () => {
+      it('rejects port 443 over plaintext HTTP as non-standard without explicit authorization', async () => {
         const url = new URL('http://primary.example.com:443/test');
+        const ctx = await getScanContextWithPorts();
         expect(() =>
-          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts())
+          AuthorizedScanScopeGuard.validate(url, 'GET', ctx)
         ).toThrow(/Port 443 is non-standard and has not been explicitly authorized for protocol 'http:'/i);
       });
 
-      it('rejects port 80 over TLS HTTPS as non-standard without explicit authorization', () => {
+      it('rejects port 80 over TLS HTTPS as non-standard without explicit authorization', async () => {
         const url = new URL('https://primary.example.com:80/test');
+        const ctx = await getScanContextWithPorts();
         expect(() =>
-          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts())
+          AuthorizedScanScopeGuard.validate(url, 'GET', ctx)
         ).toThrow(/Port 80 is non-standard and has not been explicitly authorized for protocol 'https:'/i);
       });
 
-      it('permits standard port 80 for HTTP', () => {
+      it('permits standard port 80 for HTTP', async () => {
         const url = new URL('http://primary.example.com:80/test');
-        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts());
+        const ctx = await getScanContextWithPorts();
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', ctx);
         expect(result.allowed).toBe(true);
       });
 
-      it('permits standard port 443 for HTTPS', () => {
+      it('permits standard port 443 for HTTPS', async () => {
         const url = new URL('https://primary.example.com:443/test');
-        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts());
+        const ctx = await getScanContextWithPorts();
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', ctx);
         expect(result.allowed).toBe(true);
       });
 
-      it('permits port 443 over HTTP when explicitly whitelisted in allowedPorts', () => {
+      it('permits port 443 over HTTP when explicitly whitelisted in allowedPorts', async () => {
         const url = new URL('http://primary.example.com:443/test');
-        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([443]));
+        const ctx = await getScanContextWithPorts([443]);
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', ctx);
         expect(result.allowed).toBe(true);
       });
 
-      it('permits port 80 over HTTPS when explicitly whitelisted in allowedPorts', () => {
+      it('permits port 80 over HTTPS when explicitly whitelisted in allowedPorts', async () => {
         const url = new URL('https://primary.example.com:80/test');
-        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([80]));
+        const ctx = await getScanContextWithPorts([80]);
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', ctx);
         expect(result.allowed).toBe(true);
       });
 
-      it('strictly blocks high-risk internal infrastructure port 22 even if included in allowedPorts', () => {
+      it('strictly blocks high-risk internal infrastructure port 22 even if included in allowedPorts', async () => {
         const url = new URL('http://primary.example.com:22/ssh-test');
+        const ctx = await getScanContextWithPorts([22]);
         expect(() =>
-          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([22]))
+          AuthorizedScanScopeGuard.validate(url, 'GET', ctx)
         ).toThrow(/prohibited internal infrastructure port/i);
       });
     });
@@ -1409,6 +1417,315 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         }
       });
     });
-  });
 
+    describe('P0: Context-Minting Bypass Prevention & Strict Injection Policy', () => {
+      it('SafeVerificationHttpFetcher rejects caller-supplied primaryDomain and token without trusted context before DNS', async () => {
+        let dnsCalls = 0;
+        const mockResolver = new DnsResolver({
+          lookupFn: async () => {
+            dnsCalls++;
+            return [{ address: '127.0.0.1', family: 4 }];
+          },
+          allowLoopbackForTesting: true,
+        });
+
+        const client = new SafeHttpClient({
+          dnsResolver: mockResolver,
+          allowLoopbackForTesting: true,
+        });
+
+        const fetcher = new SafeVerificationHttpFetcher({ client, allowLoopbackForTesting: true });
+
+        // Attacker attempts to provide domain and token in options directly
+        await expect(
+          fetcher.fetch('http://target.com/.well-known/veltrix-challenge/token123', {
+            primaryDomain: 'target.com',
+            token: 'token123',
+          } as any)
+        ).rejects.toThrow(/SafeVerificationHttpFetcher requires a pre-validated authoritative VerificationScopeContext/i);
+
+        expect(dnsCalls).toBe(0);
+      });
+
+      it('SafeVerificationHttpFetcher rejects forged or cloned context before DNS', async () => {
+        let dnsCalls = 0;
+        const mockResolver = new DnsResolver({
+          lookupFn: async () => {
+            dnsCalls++;
+            return [{ address: '127.0.0.1', family: 4 }];
+          },
+          allowLoopbackForTesting: true,
+        });
+
+        const client = new SafeHttpClient({
+          dnsResolver: mockResolver,
+          allowLoopbackForTesting: true,
+        });
+
+        const fetcher = new SafeVerificationHttpFetcher({ client, allowLoopbackForTesting: true });
+
+        // Forged context
+        const forgedContext = {
+          purpose: 'DOMAIN_OWNERSHIP_VERIFICATION',
+          primaryDomain: 'target.com',
+          activeToken: 'tok123',
+        };
+
+        await expect(
+          fetcher.fetch('http://target.com/.well-known/veltrix-challenge/tok123', {
+            context: forgedContext as any,
+          })
+        ).rejects.toThrow(/Untrusted or forged request authorization context rejected/i);
+
+        expect(dnsCalls).toBe(0);
+      });
+
+      it('executes successfully when provided with an authoritative context from storage', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        const trustedContext = await createAuthoritativeVerificationScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+        });
+
+        const client = new SafeHttpClient({
+          dnsResolver: new DnsResolver({
+            lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+            allowLoopbackForTesting: true,
+          }),
+          socketConnector: {
+            connect: () => {
+              return net.connect({ host: '127.0.0.1', port: localHttpPort });
+            },
+            connectTls: (opts) => {
+              return tls.connect({
+                socket: opts.socket,
+                servername: opts.servername,
+                rejectUnauthorized: opts.rejectUnauthorized,
+              });
+            },
+          },
+          allowLoopbackForTesting: true,
+        });
+
+        const fetcher = new SafeVerificationHttpFetcher({ client, allowLoopbackForTesting: true });
+
+        const res = await fetcher.fetch(
+          `http://${validAsset.primaryDomain}/.well-known/veltrix-challenge/${validAsset.verificationToken}`,
+          { context: trustedContext }
+        );
+
+        expect(res.status).toBe(200);
+      });
+
+      it('strictly prohibits injected dependencies in production across verifiers and fetchers', () => {
+        const prevEnv = process.env.NODE_ENV;
+        try {
+          process.env.NODE_ENV = 'production';
+          const store = new MemoryStore();
+
+          // 1. SafeVerificationHttpFetcher
+          expect(
+            () => new SafeVerificationHttpFetcher({ client: new SafeHttpClient() })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+
+          expect(
+            () => new SafeVerificationHttpFetcher({ allowLoopbackForTesting: true })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+
+          // 2. DomainOwnershipVerifier
+          const dummyResolver = new DnsResolver();
+          expect(
+            () => new DomainOwnershipVerifier(store, { resolver: dummyResolver })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+
+          const dummyFetcher = new SafeVerificationHttpFetcher();
+          expect(
+            () => new DomainOwnershipVerifier(store, { fetcher: dummyFetcher })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+
+          // 3. HttpVerifier
+          expect(
+            () => new HttpVerifier({ fetcher: dummyFetcher })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+
+          // 4. MetaVerifier
+          expect(
+            () => new MetaVerifier({ fetcher: dummyFetcher })
+          ).toThrow(/FATAL_SECURITY_ERROR/i);
+        } finally {
+          process.env.NODE_ENV = prevEnv;
+        }
+      });
+    });
+
+    describe('P1: Complete Hop-by-Hop and Connection-Nominated Header Filtering', () => {
+      it('strips Connection-nominated custom headers and all standard hop-by-hop headers, forcing Connection: close', async () => {
+        let receivedHeaders: http.IncomingHttpHeaders | null = null;
+        const testServer = http.createServer((req, res) => {
+          receivedHeaders = req.headers;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+
+        await new Promise<void>((r) => testServer.listen(0, '127.0.0.1', r));
+        const port = (testServer.address() as net.AddressInfo).port;
+
+        try {
+          const client = new SafeHttpClient({
+            dnsResolver: new DnsResolver({
+              lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+              allowLoopbackForTesting: true,
+            }),
+            allowLoopbackForTesting: true,
+          });
+
+          const store = new MemoryStore();
+          await store.saveWebsite(validAsset);
+          const context = await createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-hbh-001',
+            allowedPorts: [port],
+          });
+
+          await client.get(`http://primary.example.com:${port}/hbh-comprehensive`, {
+            allowLoopbackForTesting: true,
+            headers: {
+              // Nominate two custom headers in Connection header with whitespace
+              'Connection': 'keep-alive, X-Custom-Token  ,  X-Internal-Secret ',
+              // Standard hop-by-hop headers in mixed-case
+              'kEeP-aLiVe': 'timeout=5, max=1000',
+              'Te': 'trailers',
+              'TrAiLeR': 'Expires',
+              'UpGrAdE': 'websocket',
+              'PrOxY-CoNnEcTiOn': 'keep-alive',
+              'Proxy-Authenticate': 'Basic',
+              'Proxy-Authorization': 'Basic dXNlcjpwYXNz',
+              // Nominated custom headers
+              'X-Custom-Token': 'secret-token-1234',
+              'x-internal-secret': 'confidential-data',
+              // Safe end-to-end headers
+              'X-Safe-End-To-End': 'preserve-me',
+              'Accept': 'application/json',
+              'User-Agent': 'Veltrix-Security-Scanner',
+            },
+            context,
+          });
+
+          expect(receivedHeaders).not.toBeNull();
+          // Connection is strictly overridden to 'close'
+          expect(receivedHeaders!['connection']).toBe('close');
+
+          // Nominated custom headers are completely stripped
+          expect(receivedHeaders!['x-custom-token']).toBeUndefined();
+          expect(receivedHeaders!['x-internal-secret']).toBeUndefined();
+
+          // Standard hop-by-hop headers are completely stripped
+          expect(receivedHeaders!['keep-alive']).toBeUndefined();
+          expect(receivedHeaders!['te']).toBeUndefined();
+          expect(receivedHeaders!['trailer']).toBeUndefined();
+          expect(receivedHeaders!['upgrade']).toBeUndefined();
+          expect(receivedHeaders!['proxy-connection']).toBeUndefined();
+          expect(receivedHeaders!['proxy-authenticate']).toBeUndefined();
+          expect(receivedHeaders!['proxy-authorization']).toBeUndefined();
+
+          // Safe end-to-end headers are preserved
+          expect(receivedHeaders!['x-safe-end-to-end']).toBe('preserve-me');
+          expect(receivedHeaders!['accept']).toBe('application/json');
+          expect(receivedHeaders!['user-agent']).toBe('Veltrix-Security-Scanner');
+        } finally {
+          await new Promise<void>((r) => testServer.close(() => r()));
+        }
+      });
+
+      it('strips nominated hop-by-hop headers and credentials on cross-origin redirects while preserving safe headers', async () => {
+        let server1Headers: http.IncomingHttpHeaders | null = null;
+        let server2Headers: http.IncomingHttpHeaders | null = null;
+
+        let port2 = 0;
+        const server2 = http.createServer((req, res) => {
+          server2Headers = req.headers;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ redirected: true }));
+        });
+        await new Promise<void>((r) => server2.listen(0, '127.0.0.1', r));
+        port2 = (server2.address() as net.AddressInfo).port;
+
+        const server1 = http.createServer((req, res) => {
+          server1Headers = req.headers;
+          // Cross-origin redirect to api.example.com
+          res.writeHead(302, {
+            'Location': `http://api.example.com:${port2}/destination`,
+          });
+          res.end();
+        });
+        await new Promise<void>((r) => server1.listen(0, '127.0.0.1', r));
+        const port1 = (server1.address() as net.AddressInfo).port;
+
+        try {
+          const client = new SafeHttpClient({
+            dnsResolver: new DnsResolver({
+              lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+              allowLoopbackForTesting: true,
+            }),
+            allowLoopbackForTesting: true,
+          });
+
+          const store = new MemoryStore();
+          await store.saveWebsite(validAsset);
+          const context = await createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-redir-001',
+            allowedPorts: [port1, port2],
+          });
+
+          const res = await client.get(`http://primary.example.com:${port1}/initial`, {
+            allowLoopbackForTesting: true,
+            maxRedirects: 3,
+            headers: {
+              'Connection': 'close, X-Hop-Nominated',
+              'X-Hop-Nominated': 'sensitive-hop-data',
+              'Authorization': 'Bearer secret-jwt-token-12345',
+              'Cookie': 'session=abcde12345',
+              'X-Org-Key': 'org-secret-key',
+              'X-Safe-Audit': 'audit-trail-ok',
+              'Accept': 'application/json',
+            },
+            context,
+          });
+
+          expect(res.status).toBe(200);
+          expect(res.data).toEqual({ redirected: true });
+
+          // Verify server 1 received headers
+          expect(server1Headers).not.toBeNull();
+          expect(server1Headers!['x-hop-nominated']).toBeUndefined(); // stripped by hop-by-hop filter
+          expect(server1Headers!['authorization']).toBe('Bearer secret-jwt-token-12345');
+
+          // Verify server 2 (cross-origin redirect destination)
+          expect(server2Headers).not.toBeNull();
+          // Hop-by-hop and nominated headers are absent
+          expect(server2Headers!['connection']).toBe('close');
+          expect(server2Headers!['x-hop-nominated']).toBeUndefined();
+
+          // Sensitive credentials stripped on cross-origin redirect
+          expect(server2Headers!['authorization']).toBeUndefined();
+          expect(server2Headers!['cookie']).toBeUndefined();
+          expect(server2Headers!['x-org-key']).toBeUndefined();
+
+          // Safe end-to-end headers preserved across redirect
+          expect(server2Headers!['x-safe-audit']).toBe('audit-trail-ok');
+          expect(server2Headers!['accept']).toBe('application/json');
+        } finally {
+          await Promise.all([
+            new Promise<void>((r) => server1.close(() => r())),
+            new Promise<void>((r) => server2.close(() => r())),
+          ]);
+        }
+      });
+    });
+  });
 });

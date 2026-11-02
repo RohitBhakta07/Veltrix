@@ -16,6 +16,7 @@ import {
   type SafeHttpRequestOptions,
   type SafeHttpResponse,
   SafeTransportError,
+  RESTRICTED_HOP_BY_HOP_HEADERS,
 } from './types.js';
 import { DnsResolver } from './dns-resolver.js';
 import { DefaultSocketConnector } from './socket-connector.js';
@@ -34,19 +35,6 @@ export interface SafeHttpClientOptions {
   socketRegistry?: ActiveSocketRegistry;
   allowLoopbackForTesting?: boolean;
 }
-
-const RESTRICTED_HEADERS = new Set([
-  'host',
-  ':authority',
-  'connection',
-  'proxy-authorization',
-  'proxy-connection',
-  'transfer-encoding',
-  'upgrade',
-  ':method',
-  ':path',
-  ':scheme',
-]);
 
 export class SafeHttpClient {
   private readonly dnsResolver: DnsResolverInterface;
@@ -476,6 +464,24 @@ export class SafeHttpClient {
       const expectedHost = url.port ? `${url.hostname}:${url.port}` : url.hostname;
       const sanitizedHeaders: Record<string, string | string[]> = {};
 
+      // Parse nominated headers from caller-supplied Connection header(s) case-insensitively
+      const nominatedHeaders = new Set<string>();
+      for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() === 'connection') {
+          const valArr = Array.isArray(value) ? value : [value];
+          for (const item of valArr) {
+            if (typeof item === 'string') {
+              for (const token of item.split(',')) {
+                const clean = token.trim().toLowerCase();
+                if (clean.length > 0) {
+                  nominatedHeaders.add(clean);
+                }
+              }
+            }
+          }
+        }
+      }
+
       for (const [key, value] of Object.entries(headers)) {
         const lowerKey = key.toLowerCase();
         if (lowerKey === 'host' || lowerKey === ':authority') {
@@ -491,8 +497,8 @@ export class SafeHttpClient {
           }
           continue;
         }
-        if (RESTRICTED_HEADERS.has(lowerKey)) {
-          continue; // Strip restricted hop-by-hop headers
+        if (RESTRICTED_HOP_BY_HOP_HEADERS.has(lowerKey) || nominatedHeaders.has(lowerKey)) {
+          continue; // Strip restricted hop-by-hop headers and connection-nominated headers
         }
         sanitizedHeaders[key] = value;
       }

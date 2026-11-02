@@ -8,6 +8,7 @@
 import {
   type RequestAuthorizationContext,
   SafeTransportError,
+  RESTRICTED_HOP_BY_HOP_HEADERS,
 } from './types.js';
 import { AuthorizedScanScopeGuard } from './scope-guard.js';
 
@@ -137,8 +138,27 @@ export class RedirectHandler {
     const isCrossOrigin = currentUrl.origin !== nextUrl.origin;
     const nextHeaders: Record<string, string | string[]> = {};
 
+    const nominatedRedirectHeaders = new Set<string>();
+    for (const [key, value] of Object.entries(currentHeaders)) {
+      if (key.toLowerCase() === 'connection') {
+        const values = Array.isArray(value) ? value : [value];
+        for (const v of values) {
+          if (typeof v === 'string') {
+            for (const token of v.split(',')) {
+              const clean = token.trim().toLowerCase();
+              if (clean.length > 0) nominatedRedirectHeaders.add(clean);
+            }
+          }
+        }
+      }
+    }
+
     for (const [key, value] of Object.entries(currentHeaders)) {
       const lowerKey = key.toLowerCase();
+      // Hop-by-hop and connection-nominated headers are NEVER forwarded across hops
+      if (RESTRICTED_HOP_BY_HOP_HEADERS.has(lowerKey) || nominatedRedirectHeaders.has(lowerKey)) {
+        continue;
+      }
       if (isCrossOrigin) {
         if (
           lowerKey === 'authorization' ||

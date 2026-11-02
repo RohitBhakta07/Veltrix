@@ -10,7 +10,7 @@ import {
 import {
   createAuthorizedScanScopeContext,
   createVerificationScopeContext,
-} from '../../src/scanner/transport/context-authority.js';
+} from './helpers/test-context-helper.js';
 
 describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
   let redirectServer: http.Server;
@@ -181,8 +181,8 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await new Promise<void>((resolve) => redirectServer.close(() => resolve()));
   });
 
-  const getAuthorizedContext = (overrides?: any) =>
-    createAuthorizedScanScopeContext({
+  const getAuthorizedContext = async (overrides?: any) =>
+    await createAuthorizedScanScopeContext({
       orgId: 'org-enterprise-01',
       scanId: 'scan-001',
       siteId: 'site-001',
@@ -212,7 +212,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await expect(
       client.get(`http://primary.example.com:${serverPort}/.well-known/veltrix-challenge/${token}`, {
         allowLoopbackForTesting: true,
-        context: createVerificationScopeContext({
+        context: await createVerificationScopeContext({
           primaryDomain: 'primary.example.com',
           activeToken: token,
         }),
@@ -224,7 +224,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/redirect-1`, {
       allowLoopbackForTesting: true,
-      context: getAuthorizedContext(),
+      context: await getAuthorizedContext(),
     });
 
     expect(res.status).toBe(302);
@@ -237,7 +237,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const res = await client.get(`http://primary.example.com:${serverPort}/redirect-1`, {
       maxRedirects: 3,
       allowLoopbackForTesting: true,
-      context: getAuthorizedContext(),
+      context: await getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);
@@ -251,7 +251,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/chain-1`, {
         maxRedirects: 3,
         allowLoopbackForTesting: true,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/Maximum redirect limit of 3 hops exceeded/i);
   });
@@ -262,7 +262,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/loop-a`, {
         maxRedirects: 5,
         allowLoopbackForTesting: true,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/Redirect loop detected/i);
   });
@@ -275,7 +275,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/ssrf-imds`, {
         maxRedirects: 2,
         allowLoopbackForTesting: true,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/out of authorized scan scope|prohibited IP address/i);
 
@@ -294,7 +294,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await expect(
       strictClient.get(`http://primary.example.com:${serverPort}/ssrf-local`, {
         maxRedirects: 2,
-        context: getAuthorizedContext({ allowedPorts: [serverPort, 8080] }),
+        context: await getAuthorizedContext({ allowedPorts: [serverPort, 8080] }),
       })
     ).rejects.toThrow(SafeTransportError);
 
@@ -303,7 +303,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/ssrf-ipv6`, {
         maxRedirects: 2,
         allowLoopbackForTesting: true,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(SafeTransportError);
   });
@@ -326,7 +326,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         client.get(`http://primary.example.com:${extPort}/external`, {
           maxRedirects: 2,
           allowLoopbackForTesting: true,
-          context: getAuthorizedContext({ allowedPorts: [serverPort, extPort] }),
+          context: await getAuthorizedContext({ allowedPorts: [serverPort, extPort] }),
         })
       ).rejects.toThrow(/out of authorized scan scope/i);
     } finally {
@@ -345,7 +345,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         'X-Org-Id': 'org-enterprise-01',
         'X-Safe-Header': 'keep-me',
       },
-      context: getAuthorizedContext(),
+      context: await getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);
@@ -362,7 +362,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       body: JSON.stringify({ item: 'data' }),
       maxRedirects: 2,
       allowLoopbackForTesting: true,
-      context: getAuthorizedContext({
+      context: await getAuthorizedContext({
         allowedMethods: ['GET', 'HEAD', 'POST'],
       }),
     });
@@ -376,7 +376,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const res = await client.get(`http://primary.example.com:${serverPort}/redirect-large-body`, {
       maxRedirects: 2,
       allowLoopbackForTesting: true,
-      context: getAuthorizedContext(),
+      context: await getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);
@@ -401,7 +401,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         allowLoopbackForTesting: true,
         bodyIdleTimeoutMs: 150,
         timeoutMs: 300,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/timed out/i);
 
@@ -425,7 +425,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         allowLoopbackForTesting: true,
         bodyIdleTimeoutMs: 100,
         timeoutMs: 250,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/timed out/i);
 
@@ -454,7 +454,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         allowLoopbackForTesting: true,
         signal: controller.signal,
         timeoutMs: 5000,
-        context: getAuthorizedContext(),
+        context: await getAuthorizedContext(),
       })
     ).rejects.toThrow(/cancelled by caller AbortSignal/i);
 
@@ -475,7 +475,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const res = await client.get(`http://primary.example.com:${serverPort}/multi-hop-1`, {
       maxRedirects: 5,
       allowLoopbackForTesting: true,
-      context: getAuthorizedContext(),
+      context: await getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);

@@ -7,7 +7,7 @@ import {
   SafeHttpClient,
   DnsResolver,
 } from '../../src/scanner/transport/index.js';
-import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
+import { createAuthorizedScanScopeContext } from './helpers/test-context-helper.js';
 
 describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (TASK-802)', () => {
   let longPollingServer: http.Server;
@@ -46,7 +46,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
     const collisionScanId = 'scan-collision-001';
 
     // Tenant A Context
-    const tenantAContext = createAuthorizedScanScopeContext({
+    const tenantAContext = await createAuthorizedScanScopeContext({
       orgId: 'org-alpha',
       scanId: collisionScanId,
       siteId: 'site-alpha-001',
@@ -59,7 +59,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
     });
 
     // Tenant B Context (Identical scanId!)
-    const tenantBContext = createAuthorizedScanScopeContext({
+    const tenantBContext = await createAuthorizedScanScopeContext({
       orgId: 'org-bravo',
       scanId: collisionScanId,
       siteId: 'site-bravo-001',
@@ -136,7 +136,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
 
     const orgId = 'org-enterprise-01';
 
-    const scan1Context = createAuthorizedScanScopeContext({
+    const scan1Context = await createAuthorizedScanScopeContext({
       orgId,
       scanId: 'scan-alpha-1',
       siteId: 'site-001',
@@ -148,7 +148,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
       allowedPorts: [serverPort],
     });
 
-    const scan2Context = createAuthorizedScanScopeContext({
+    const scan2Context = await createAuthorizedScanScopeContext({
       orgId,
       scanId: 'scan-alpha-2',
       siteId: 'site-002',

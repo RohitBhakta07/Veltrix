@@ -416,6 +416,9 @@ export class HttpVerifier {
   private readonly fetcher: HttpFetcherInterface;
 
   constructor(fetcher?: HttpFetcherInterface) {
+    if (process.env.NODE_ENV === 'production' && fetcher) {
+      throw new Error('FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production.');
+    }
     this.fetcher = fetcher || new SafeVerificationHttpFetcher();
   }
 

@@ -7,7 +7,7 @@ import {
   SafeHttpClient,
   DnsResolver,
 } from '../../src/scanner/transport/index.js';
-import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
+import { createAuthorizedScanScopeContext } from './helpers/test-context-helper.js';
 
 describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)', () => {
   let server: http.Server;
@@ -120,8 +120,8 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  const getContext = () =>
-    createAuthorizedScanScopeContext({
+  const getContext = async () =>
+    await createAuthorizedScanScopeContext({
       orgId: 'org-enterprise-01',
       scanId: 'scan-001',
       siteId: 'site-001',
@@ -147,7 +147,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/uncompressed-5mb`, {
       allowLoopbackForTesting: true,
-      context: getContext(),
+      context: await getContext(),
     });
 
     expect(res.status).toBe(200);
@@ -160,7 +160,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/compressed-wire-overflow`, {
         allowLoopbackForTesting: true,
-        context: getContext(),
+        context: await getContext(),
       })
     ).rejects.toThrow(/exceeds maximum wire limit|exceeded maximum compressed wire limit/i);
   });
@@ -172,7 +172,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/decompressed-overflow`, {
         allowLoopbackForTesting: true,
-        context: getContext(),
+        context: await getContext(),
       })
     ).rejects.toThrow(/Decompression bomb detected|exceeded maximum limit of 10485760 bytes/i);
 
@@ -187,7 +187,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/ratio-bomb`, {
         allowLoopbackForTesting: true,
-        context: getContext(),
+        context: await getContext(),
       })
     ).rejects.toThrow(/Decompression bomb detected: Expansion ratio exceeded 100:1/i);
   });
@@ -196,7 +196,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/chunked-stream`, {
       allowLoopbackForTesting: true,
-      context: getContext(),
+      context: await getContext(),
     });
 
     expect(res.status).toBe(200);
@@ -208,7 +208,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/unsupported-algo`, {
         allowLoopbackForTesting: true,
-        context: getContext(),
+        context: await getContext(),
       })
     ).rejects.toThrow(/Unsupported or unhandled content-encoding: 'zstd'/i);
   });
@@ -218,7 +218,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/malformed-gzip`, {
         allowLoopbackForTesting: true,
-        context: getContext(),
+        context: await getContext(),
       })
     ).rejects.toThrow(/Decompression error for 'gzip' payload/i);
   });

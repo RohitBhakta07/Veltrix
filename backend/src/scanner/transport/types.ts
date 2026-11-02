@@ -82,6 +82,30 @@ export type RequestAuthorizationContext =
 
 export { isTrustedScopeContext } from './context-authority.js';
 
+/**
+ * Standard RFC 7230 / RFC 9110 hop-by-hop headers that must never be forwarded
+ * or accepted from external caller configurations.
+ */
+export const RESTRICTED_HOP_BY_HOP_HEADERS: ReadonlySet<string> = Object.freeze(
+  new Set([
+    'host',
+    ':authority',
+    ':method',
+    ':path',
+    ':scheme',
+    ':status',
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'proxy-connection',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+  ])
+);
+
 export interface DnsRecord {
   address: string;
   family: number;

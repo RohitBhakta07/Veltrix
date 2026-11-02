@@ -3,6 +3,12 @@
  *
  * Implements HttpFetcherInterface backed by SafeHttpClient and VerificationScopeGuard
  * for domain ownership challenge resolution.
+ *
+ * Inviolable Security Mandate:
+ * - Pre-request context minting is prohibited. Fetch requests must supply an authoritatively
+ *   minted VerificationScopeContext created through database provenance.
+ * - In production (process.env.NODE_ENV === 'production'), injected SafeHttpClient implementations
+ *   and test loopback flags are strictly forbidden with FATAL_SECURITY_ERROR.
  */
 
 import { SafeHttpClient } from './safe-http-client.js';
@@ -11,18 +17,11 @@ import {
   type VerificationScopeContext,
   SafeTransportError,
 } from './types.js';
-import {
-  createInternalVerificationContext,
-  isTrustedScopeContext,
-} from './context-authority.js';
+import { isTrustedScopeContext } from './context-authority.js';
 
 export interface SafeVerificationFetcherOptions {
   client?: SafeHttpClient;
   allowLoopbackForTesting?: boolean;
-  defaultToken?: string;
-  primaryDomain?: string;
-  orgId?: string;
-  siteId?: string;
 }
 
 export interface SafeVerificationFetchOptions {
@@ -37,59 +36,44 @@ export interface SafeVerificationFetchOptions {
 
 export class SafeVerificationHttpFetcher implements HttpFetcherInterface {
   private readonly client: SafeHttpClient;
-  private readonly defaultToken?: string;
-  private readonly primaryDomain?: string;
-  private readonly orgId?: string;
-  private readonly siteId?: string;
   private readonly allowLoopbackForTesting: boolean;
 
   constructor(options?: SafeVerificationFetcherOptions) {
+    if (process.env.NODE_ENV === 'production') {
+      if (options?.client || options?.allowLoopbackForTesting) {
+        throw new Error(
+          'FATAL_SECURITY_ERROR: Injected SafeHttpClient and test loopback options are prohibited in production.'
+        );
+      }
+    }
+
     this.allowLoopbackForTesting = options?.allowLoopbackForTesting === true;
     this.client =
       options?.client ||
       new SafeHttpClient({
         allowLoopbackForTesting: this.allowLoopbackForTesting,
       });
-    this.defaultToken = options?.defaultToken;
-    this.primaryDomain = options?.primaryDomain;
-    this.orgId = options?.orgId;
-    this.siteId = options?.siteId;
   }
 
   async fetch(
     urlStr: string,
     options?: SafeVerificationFetchOptions
   ): Promise<HttpResponse> {
-    let context: VerificationScopeContext;
-
-    if (options?.context) {
-      if (!isTrustedScopeContext(options.context)) {
-        throw new SafeTransportError(
-          'DOMAIN_NOT_VERIFIED',
-          'Untrusted or forged request authorization context rejected. Context must be created via trusted internal service.'
-        );
-      }
-      context = options.context;
-    } else {
-      const primaryDomain = options?.primaryDomain || this.primaryDomain;
-      const activeToken = options?.token || this.defaultToken;
-      const orgId = options?.orgId || this.orgId;
-      const siteId = options?.siteId || this.siteId;
-
-      if (!primaryDomain || !activeToken) {
-        throw new SafeTransportError(
-          'DOMAIN_NOT_VERIFIED',
-          'SafeVerificationHttpFetcher requires trusted asset context (primaryDomain and activeToken). Deriving verification context from arbitrary URLs is prohibited.'
-        );
-      }
-
-      context = createInternalVerificationContext({
-        primaryDomain,
-        activeToken,
-        orgId,
-        siteId,
-      });
+    if (!options?.context) {
+      throw new SafeTransportError(
+        'DOMAIN_NOT_VERIFIED',
+        'SafeVerificationHttpFetcher requires a pre-validated authoritative VerificationScopeContext. Deriving or minting verification contexts from arbitrary per-request parameters is prohibited.'
+      );
     }
+
+    if (!isTrustedScopeContext(options.context)) {
+      throw new SafeTransportError(
+        'DOMAIN_NOT_VERIFIED',
+        'Untrusted or forged request authorization context rejected. Context must be created via trusted internal service.'
+      );
+    }
+
+    const context: VerificationScopeContext = options.context;
 
     const res = await this.client.get(urlStr, {
       timeoutMs: options?.timeoutMs || 5000,
