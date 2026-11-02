@@ -24,24 +24,29 @@ import {
 /**
  * SERVER-SIDE SCAN POLICY BOUNDARY & AUTHORIZATION PROFILE SPECIFICATION
  *
- * Current Architectural Boundary & Limitation Note (TASK-802):
+ * Current Architectural Limitation & Security Invariant Note (TASK-802):
  * In Phase 8 TASK-802, database-persisted scan configuration profiles (scheduled for TASK-803)
- * have not yet been implemented in the storage schema. To establish an uncompromised server-side
- * authorization boundary and prevent arbitrary client request parameters from granting extra
- * permissions or bypassing security controls:
+ * have not yet been implemented in the storage schema.
  *
- * 1. HTTP Methods: Defaults strictly to ['GET', 'HEAD']. Caller-requested methods are validated
- *    against SERVER_CONTROLLED_ALLOWED_METHODS. High-risk methods (TRACE, CONNECT, TRACK) and
- *    arbitrary verbs are categorically rejected.
- * 2. Destination Ports: Barred internal infrastructure ports (BLOCKED_INTERNAL_PORTS) are rejected
- *    at context-minting time regardless of caller allowlist contents. Ports must be valid integers in 1..65535.
- * 3. Excluded Paths: Server-side mandatory excluded paths (e.g. /.env, /.git, /proc/) are unconditionally
- *    enforced on every context and cannot be removed or overridden by caller input.
- * 4. Policy Immutability: All policy arrays (methods, ports, excluded paths, approved subdomains)
- *    are defensively cloned and frozen (Object.freeze) before placing them into the trusted context.
+ * IMPORTANT SECURITY HONESTY DISCLOSURE:
+ * Merely validating HTTP method names against a permitted vocabulary ('GET', 'POST', etc.) does
+ * NOT constitute operation-level authorization. An attacker or client passing 'allowedMethods: [POST]'
+ * or 'allowedPorts: [8080]' in request parameters must NEVER be trusted to self-authorize expanded
+ * scanner capabilities.
+ *
+ * Therefore, until persisted scan profiles are implemented in TASK-803:
+ * 1. Default Authority: Scan authorization defaults strictly to safe, read-only HTTP methods ['GET', 'HEAD']
+ *    and standard ports (80 for HTTP, 443 for HTTPS).
+ * 2. Expansion Restriction: Client-controlled request parameters cannot expand methods (e.g. POST, PUT, DELETE)
+ *    or grant non-standard destination ports. Any attempt to do so in raw parameters is rejected.
+ * 3. Trusted Server Policy: Non-default methods or ports can ONLY be authorized by trusted backend orchestration
+ *    code via a cryptographically/in-memory branded ServerScanPolicy (created via createServerScanPolicy).
+ * 4. Immutable Exclusions: Excluded paths are strictly string-based prefixes. Mutable RegExp instances are
+ *    categorically prohibited to prevent mutable object injection. Mandatory server-side exclusions
+ *    (/.env, /.git, /proc/, etc.) are always prepended and cannot be bypassed or removed.
  */
 
-export const SERVER_CONTROLLED_ALLOWED_METHODS: ReadonlySet<string> = new Set([
+const SERVER_CONTROLLED_ALLOWED_METHODS_SET: ReadonlySet<string> = new Set([
   'GET',
   'HEAD',
   'POST',
@@ -51,7 +56,21 @@ export const SERVER_CONTROLLED_ALLOWED_METHODS: ReadonlySet<string> = new Set([
   'OPTIONS',
 ]);
 
-export const SERVER_MANDATORY_EXCLUDED_PATHS: readonly (string | RegExp)[] = Object.freeze([
+/**
+ * Validates whether an HTTP method is in the server-controlled allowed vocabulary.
+ * Case-insensitive. Protects underlying policy collection from external mutation.
+ */
+export function isServerControlledAllowedMethod(method: string): boolean {
+  if (typeof method !== 'string') return false;
+  return SERVER_CONTROLLED_ALLOWED_METHODS_SET.has(method.trim().toUpperCase());
+}
+
+/**
+ * Mandatory server-side security excluded path prefixes.
+ * Categorically enforced on all authorized scans to prevent accessing sensitive local host/cloud endpoints.
+ * Cannot be overridden, bypassed, or removed by caller input.
+ */
+export const SERVER_MANDATORY_EXCLUDED_PATHS: readonly string[] = Object.freeze([
   '/.env',
   '/.git',
   '/.aws',
@@ -61,11 +80,12 @@ export const SERVER_MANDATORY_EXCLUDED_PATHS: readonly (string | RegExp)[] = Obj
 ]);
 
 /**
- * Module-private WeakSet capability registry.
+ * Module-private WeakSet capability registries.
  * Absolutely NEVER exported. Ordinary JSON or attacker-controlled objects
- * cannot obtain membership in this registry.
+ * cannot obtain membership in these registries.
  */
 const TRUSTED_CONTEXT_REGISTRY = new WeakSet<object>();
+const TRUSTED_SERVER_POLICY_REGISTRY = new WeakSet<object>();
 
 /**
  * Validates whether an unknown context reference was authoritatively minted by this module.
@@ -77,13 +97,128 @@ export function isTrustedScopeContext(context: unknown): context is RequestAutho
   return TRUSTED_CONTEXT_REGISTRY.has(context);
 }
 
+/**
+ * Validates whether an unknown policy descriptor is a trusted ServerScanPolicy.
+ */
+export function isServerScanPolicy(policy: unknown): policy is ServerScanPolicy {
+  if (!policy || typeof policy !== 'object') {
+    return false;
+  }
+  return TRUSTED_SERVER_POLICY_REGISTRY.has(policy);
+}
+
+/**
+ * Trusted server-owned scan policy descriptor.
+ * Can only be minted by trusted backend orchestration code via createServerScanPolicy.
+ */
+export interface ServerScanPolicy {
+  readonly allowedMethods?: readonly string[];
+  readonly allowedPorts?: readonly number[];
+  readonly additionalExcludedPaths?: readonly string[];
+}
+
+/**
+ * Creates an authoritative ServerScanPolicy descriptor.
+ * Strictly available to trusted backend orchestration code or verified profile loaders.
+ */
+export function createServerScanPolicy(policy: {
+  allowedMethods?: string[];
+  allowedPorts?: number[];
+  additionalExcludedPaths?: string[];
+}): ServerScanPolicy {
+  if (!policy || typeof policy !== 'object') {
+    throw new SafeTransportError('DOMAIN_NOT_VERIFIED', 'ServerScanPolicy descriptor must be an object.');
+  }
+
+  // 1. Methods: Validate against server-controlled vocabulary
+  let cleanMethods: readonly string[] | undefined;
+  if (policy.allowedMethods !== undefined) {
+    if (!Array.isArray(policy.allowedMethods)) {
+      throw new SafeTransportError('METHOD_NOT_PERMITTED', 'allowedMethods must be an array of HTTP method strings.');
+    }
+    const validated: string[] = [];
+    for (const m of policy.allowedMethods) {
+      if (typeof m !== 'string' || m.trim().length === 0) {
+        throw new SafeTransportError('METHOD_NOT_PERMITTED', 'HTTP method entries must be non-empty strings.');
+      }
+      const upper = m.trim().toUpperCase();
+      if (!isServerControlledAllowedMethod(upper)) {
+        throw new SafeTransportError(
+          'METHOD_NOT_PERMITTED',
+          `HTTP method '${m}' is prohibited by server-side scan policy. Allowed methods: [${Array.from(SERVER_CONTROLLED_ALLOWED_METHODS_SET).join(', ')}].`
+        );
+      }
+      if (!validated.includes(upper)) validated.push(upper);
+    }
+    cleanMethods = Object.freeze(validated);
+  }
+
+  // 2. Ports: Validate 1..65535, reject blocked internal ports
+  let cleanPorts: readonly number[] | undefined;
+  if (policy.allowedPorts !== undefined) {
+    if (!Array.isArray(policy.allowedPorts)) {
+      throw new SafeTransportError('PORT_NOT_PERMITTED', 'allowedPorts must be an array of port numbers.');
+    }
+    const validatedPorts: number[] = [];
+    for (const p of policy.allowedPorts) {
+      if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 65535) {
+        throw new SafeTransportError(
+          'PORT_NOT_PERMITTED',
+          `Invalid destination port '${p}'. Ports must be valid integers between 1 and 65535.`
+        );
+      }
+      if (isBlockedInternalPort(p)) {
+        throw new SafeTransportError(
+          'INTERNAL_PORT_BLOCKED',
+          `Port ${p} is a prohibited internal infrastructure port. Scanner egress to this port is categorically blocked.`
+        );
+      }
+      if (!validatedPorts.includes(p)) validatedPorts.push(p);
+    }
+    cleanPorts = Object.freeze(validatedPorts);
+  }
+
+  // 3. Excluded Paths: String only, reject RegExp
+  let cleanExcluded: readonly string[] | undefined;
+  if (policy.additionalExcludedPaths !== undefined) {
+    if (!Array.isArray(policy.additionalExcludedPaths)) {
+      throw new SafeTransportError('MALFORMED_URL', 'additionalExcludedPaths must be an array of strings.');
+    }
+    const validatedPaths: string[] = [];
+    for (const entry of policy.additionalExcludedPaths) {
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        throw new SafeTransportError(
+          'MALFORMED_URL',
+          'Excluded path entries must be non-empty strings. RegExp instances are prohibited to prevent mutable object injection.'
+        );
+      }
+      validatedPaths.push(entry.trim());
+    }
+    cleanExcluded = Object.freeze(validatedPaths);
+  }
+
+  const policyObj: ServerScanPolicy = Object.freeze({
+    allowedMethods: cleanMethods,
+    allowedPorts: cleanPorts,
+    additionalExcludedPaths: cleanExcluded,
+  });
+  TRUSTED_SERVER_POLICY_REGISTRY.add(policyObj);
+  return policyObj;
+}
+
 export interface AuthoritativeScanParams {
   orgId: string;
   siteId: string;
   scanId: string;
+  serverPolicy?: ServerScanPolicy;
+  /**
+   * @deprecated Raw caller parameters cannot broaden scan permissions.
+   * Supplying non-default methods, non-standard ports, or invalid exclusions directly
+   * will be rejected by server policy.
+   */
   allowedMethods?: string[];
-  excludedPaths?: (string | RegExp)[];
   allowedPorts?: number[];
+  excludedPaths?: string[];
 }
 
 export interface AuthoritativeVerificationParams {
@@ -158,7 +293,7 @@ export async function createAuthoritativeScanScopeContext(
   }
 
   // Expiry validation: must be finite timestamp strictly in the future
-  if (!asset.expiresAt || typeof asset.expiresAt !== 'string') {
+  if (!asset.expiresAt || typeof asset.expiresAt !== 'string' || asset.expiresAt.trim().length === 0) {
     throw new SafeTransportError(
       'DOMAIN_NOT_VERIFIED',
       'Domain ownership verification timestamp is missing or malformed.'
@@ -166,7 +301,14 @@ export async function createAuthoritativeScanScopeContext(
   }
 
   const expiresAtMs = Date.parse(asset.expiresAt);
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+  if (!Number.isFinite(expiresAtMs) || Number.isNaN(expiresAtMs)) {
+    throw new SafeTransportError(
+      'DOMAIN_NOT_VERIFIED',
+      `Domain ownership verification timestamp '${asset.expiresAt}' is invalid or malformed.`
+    );
+  }
+
+  if (expiresAtMs <= Date.now()) {
     throw new SafeTransportError(
       'DOMAIN_NOT_VERIFIED',
       `Domain ownership verification expired at ${new Date(expiresAtMs).toISOString()}.`
@@ -187,82 +329,79 @@ export async function createAuthoritativeScanScopeContext(
   }
   const cleanApprovedSubdomains: readonly string[] = Object.freeze(cleanApprovedSubdomainsList);
 
-  // 1. Server-controlled HTTP Methods Policy: Default to ['GET', 'HEAD'] unless explicitly authorized
-  let cleanAllowedMethods: readonly string[];
-  if (!params.allowedMethods || params.allowedMethods.length === 0) {
-    cleanAllowedMethods = Object.freeze(['GET', 'HEAD']);
-  } else {
-    if (!Array.isArray(params.allowedMethods)) {
-      throw new SafeTransportError('METHOD_NOT_PERMITTED', 'allowedMethods must be an array of HTTP method strings.');
-    }
-    const validatedMethods: string[] = [];
-    for (const m of params.allowedMethods) {
-      if (typeof m !== 'string' || m.trim().length === 0) {
-        throw new SafeTransportError('METHOD_NOT_PERMITTED', 'HTTP method entries must be non-empty strings.');
-      }
-      const upperMethod = m.trim().toUpperCase();
-      if (!SERVER_CONTROLLED_ALLOWED_METHODS.has(upperMethod)) {
-        throw new SafeTransportError(
-          'METHOD_NOT_PERMITTED',
-          `HTTP method '${m}' is prohibited by server-side scan policy. Allowed methods: [${Array.from(SERVER_CONTROLLED_ALLOWED_METHODS).join(', ')}].`
-        );
-      }
-      if (!validatedMethods.includes(upperMethod)) {
-        validatedMethods.push(upperMethod);
-      }
-    }
-    cleanAllowedMethods = Object.freeze(validatedMethods);
+  // 1. Verify serverPolicy if provided
+  if (params.serverPolicy !== undefined && !isServerScanPolicy(params.serverPolicy)) {
+    throw new SafeTransportError(
+      'DOMAIN_NOT_VERIFIED',
+      'Untrusted or forged server scan policy rejected. ServerScanPolicy must be minted via createServerScanPolicy.'
+    );
   }
 
-  // 2. Server-controlled Destination Ports Policy: Reject blocked internal ports and validate integer range
-  let cleanAllowedPorts: readonly number[] | undefined;
-  if (params.allowedPorts !== undefined) {
-    if (!Array.isArray(params.allowedPorts)) {
-      throw new SafeTransportError('PORT_NOT_PERMITTED', 'allowedPorts must be an array of port numbers.');
+  const trustedPolicy = params.serverPolicy;
+
+  // 2. Reject client-controlled permission expansion
+  if (params.allowedMethods !== undefined && !trustedPolicy) {
+    const rawMethods = Array.isArray(params.allowedMethods)
+      ? params.allowedMethods.map((m) => (typeof m === 'string' ? m.trim().toUpperCase() : m))
+      : [];
+    const containsNonDefault = rawMethods.some((m) => m !== 'GET' && m !== 'HEAD');
+    if (containsNonDefault) {
+      throw new SafeTransportError(
+        'METHOD_NOT_PERMITTED',
+        'Arbitrary client request parameters cannot authorize non-default HTTP methods. Non-standard methods must originate from trusted server policy.'
+      );
     }
-    const validatedPorts: number[] = [];
-    for (const p of params.allowedPorts) {
-      if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 65535) {
-        throw new SafeTransportError(
-          'PORT_NOT_PERMITTED',
-          `Invalid destination port '${p}'. Ports must be valid integers between 1 and 65535.`
-        );
-      }
-      if (isBlockedInternalPort(p)) {
-        throw new SafeTransportError(
-          'INTERNAL_PORT_BLOCKED',
-          `Port ${p} is a prohibited internal infrastructure port. Scanner egress to this port is categorically blocked.`
-        );
-      }
-      if (!validatedPorts.includes(p)) {
-        validatedPorts.push(p);
-      }
-    }
-    cleanAllowedPorts = Object.freeze(validatedPorts);
   }
 
-  // 3. Server-controlled Excluded Paths Policy: Mandatory security exclusions cannot be removed
-  const callerExcluded: (string | RegExp)[] = [];
+  if (params.allowedPorts !== undefined && !trustedPolicy) {
+    const rawPorts = Array.isArray(params.allowedPorts) ? params.allowedPorts : [];
+    const containsNonStandard = rawPorts.some((p) => p !== 80 && p !== 443);
+    if (containsNonStandard) {
+      throw new SafeTransportError(
+        'PORT_NOT_PERMITTED',
+        'Arbitrary client request parameters cannot authorize non-standard destination ports. Non-standard ports must originate from trusted server policy.'
+      );
+    }
+  }
+
   if (params.excludedPaths !== undefined) {
     if (!Array.isArray(params.excludedPaths)) {
-      throw new SafeTransportError('MALFORMED_URL', 'excludedPaths must be an array of strings or RegExp instances.');
+      throw new SafeTransportError('MALFORMED_URL', 'excludedPaths must be an array of strings.');
     }
     for (const entry of params.excludedPaths) {
-      if (typeof entry === 'string') {
-        if (entry.trim().length === 0) {
-          throw new SafeTransportError('MALFORMED_URL', 'Excluded path string entries must be non-empty.');
-        }
-        callerExcluded.push(entry.trim());
-      } else if (entry instanceof RegExp) {
-        callerExcluded.push(entry);
-      } else {
-        throw new SafeTransportError('MALFORMED_URL', 'Excluded path entries must be strings or RegExp instances.');
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        throw new SafeTransportError(
+          'MALFORMED_URL',
+          'Excluded path entries must be non-empty strings. RegExp instances are prohibited to prevent mutable object injection.'
+        );
       }
     }
   }
-  const cleanExcludedPaths: readonly (string | RegExp)[] = Object.freeze([
+
+  // 3. Resolve Effective HTTP Methods Policy: Defaults strictly to ['GET', 'HEAD'] unless server policy authorizes
+  let cleanAllowedMethods: readonly string[];
+  if (trustedPolicy?.allowedMethods && trustedPolicy.allowedMethods.length > 0) {
+    cleanAllowedMethods = trustedPolicy.allowedMethods;
+  } else {
+    cleanAllowedMethods = Object.freeze(['GET', 'HEAD']);
+  }
+
+  // 4. Resolve Effective Destination Ports Policy: Defaults strictly to undefined (standard 80/443 only)
+  let cleanAllowedPorts: readonly number[] | undefined;
+  if (trustedPolicy?.allowedPorts && trustedPolicy.allowedPorts.length > 0) {
+    cleanAllowedPorts = trustedPolicy.allowedPorts;
+  } else {
+    cleanAllowedPorts = undefined;
+  }
+
+  // 5. Resolve Effective Excluded Paths Policy: Mandatory security exclusions + server/caller string exclusions
+  const additional: string[] = [
+    ...(trustedPolicy?.additionalExcludedPaths || []),
+    ...(Array.isArray(params.excludedPaths) ? params.excludedPaths.map((s) => s.trim()) : []),
+  ];
+  const cleanExcludedPaths: readonly string[] = Object.freeze([
     ...SERVER_MANDATORY_EXCLUDED_PATHS,
-    ...callerExcluded,
+    ...Array.from(new Set(additional)),
   ]);
 
   const context: AuthorizedScanScopeContext = Object.freeze({
@@ -275,7 +414,7 @@ export async function createAuthoritativeScanScopeContext(
     status: asset.status,
     scanBlocked: false,
     expiresAt: expiresAtMs,
-    excludedPaths: cleanExcludedPaths as (string | RegExp)[],
+    excludedPaths: cleanExcludedPaths as string[],
     allowedPorts: cleanAllowedPorts as number[] | undefined,
     allowedMethods: cleanAllowedMethods as string[],
   });

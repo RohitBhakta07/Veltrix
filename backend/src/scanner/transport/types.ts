@@ -71,7 +71,7 @@ export interface AuthorizedScanScopeContext {
   readonly status: 'VERIFIED' | 'PENDING_VERIFICATION' | 'GRACE_PERIOD' | 'EXPIRED' | 'SUSPENDED' | 'REVOKED';
   readonly scanBlocked: boolean;
   readonly expiresAt: number;
-  readonly excludedPaths?: (string | RegExp)[];
+  readonly excludedPaths?: string[];
   readonly allowedPorts?: number[];
   readonly allowedMethods?: string[];
 }

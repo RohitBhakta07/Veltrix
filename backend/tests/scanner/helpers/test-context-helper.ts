@@ -9,6 +9,7 @@ import { MemoryStore } from '../../../src/storage/memory-store.js';
 import {
   createAuthoritativeScanScopeContext,
   createAuthoritativeVerificationScopeContext,
+  createServerScanPolicy,
 } from '../../../src/scanner/transport/context-authority.js';
 import type {
   AuthorizedScanScopeContext,
@@ -27,7 +28,7 @@ export interface TestScanContextParams {
   expiresAt?: number | string;
   allowedPorts?: number[];
   allowedMethods?: string[];
-  excludedPaths?: (string | RegExp)[];
+  excludedPaths?: string[];
 }
 
 export async function createTestScanContext(
@@ -65,13 +66,22 @@ export async function createTestScanContext(
 
   await store.saveWebsite(asset);
 
+  const serverPolicy =
+    params?.allowedPorts !== undefined ||
+    params?.allowedMethods !== undefined ||
+    params?.excludedPaths !== undefined
+      ? createServerScanPolicy({
+          allowedPorts: params?.allowedPorts,
+          allowedMethods: params?.allowedMethods,
+          additionalExcludedPaths: params?.excludedPaths,
+        })
+      : undefined;
+
   return createAuthoritativeScanScopeContext(store, {
     orgId,
     siteId,
     scanId,
-    allowedPorts: params?.allowedPorts,
-    allowedMethods: params?.allowedMethods,
-    excludedPaths: params?.excludedPaths,
+    serverPolicy,
   });
 }
 

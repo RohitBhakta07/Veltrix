@@ -255,13 +255,6 @@ export class AuthorizedScanScopeGuard {
               `Path '${rawPath}' matches excluded path rule '${pattern}'. Dispatch dropped.`
             );
           }
-        } else if (pattern instanceof RegExp) {
-          if (pattern.test(rawPath) || pattern.test(normalizedPath)) {
-            throw new SafeTransportError(
-              'SSRF_BLOCKED',
-              `Path '${rawPath}' matches excluded path regex '${pattern.source}'. Dispatch dropped.`
-            );
-          }
         }
       }
     }

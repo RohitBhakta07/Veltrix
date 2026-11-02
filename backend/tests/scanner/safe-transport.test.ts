@@ -20,7 +20,9 @@ import {
   createAuthoritativeScanScopeContext,
   createAuthoritativeVerificationScopeContext,
   isTrustedScopeContext,
-  SERVER_CONTROLLED_ALLOWED_METHODS,
+  isServerControlledAllowedMethod,
+  createServerScanPolicy,
+  isServerScanPolicy,
   SERVER_MANDATORY_EXCLUDED_PATHS,
 } from '../../src/scanner/transport/context-authority.js';
 import { DefaultDnsResolver } from '../../src/scanner/verification/dns-verifier.js';
@@ -233,7 +235,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         status: 'VERIFIED',
         scanBlocked: false,
         expiresAt: Date.now() + 86400000,
-        excludedPaths: ['/auth/logout', /^\/admin(\/.*)?$/],
+        excludedPaths: ['/auth/logout', '/admin'],
       };
 
       // Normal path allowed
@@ -244,10 +246,10 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         AuthorizedScanScopeGuard.validate(new URL('https://example.com/auth/logout'), 'GET', context)
       ).toThrow(/matches excluded path rule/i);
 
-      // Excluded regex path dropped
+      // Excluded path prefix dropped
       expect(() =>
         AuthorizedScanScopeGuard.validate(new URL('https://example.com/admin/delete-all'), 'GET', context)
-      ).toThrow(/matches excluded path regex/i);
+      ).toThrow(/matches excluded path rule/i);
     });
   });
 
@@ -1041,8 +1043,10 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         orgId: validAsset.orgId,
         siteId: validAsset.siteId,
         scanId: validScanDesc.scanId,
-        allowedPorts: validScanDesc.allowedPorts,
-        allowedMethods: validScanDesc.allowedMethods,
+        serverPolicy: createServerScanPolicy({
+          allowedPorts: validScanDesc.allowedPorts,
+          allowedMethods: validScanDesc.allowedMethods,
+        }),
       });
       const authVerif = await createAuthoritativeVerificationScopeContext(store, {
         orgId: validAsset.orgId,
@@ -1165,7 +1169,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
     });
 
     it('createAuthoritativeScanScopeContext enforces finite future expiresAt invariant', async () => {
-      // Missing expiresAt
+      // Missing expiresAt (undefined)
       const store1 = new MemoryStore();
       await store1.saveWebsite({ ...validAsset, expiresAt: undefined as any });
       await expect(
@@ -1176,7 +1180,18 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         })
       ).rejects.toThrow(/verification timestamp is missing or malformed/i);
 
-      // Non-date string
+      // Empty string expiresAt
+      const storeEmpty = new MemoryStore();
+      await storeEmpty.saveWebsite({ ...validAsset, expiresAt: '   ' });
+      await expect(
+        createAuthoritativeScanScopeContext(storeEmpty, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: validScanDesc.scanId,
+        })
+      ).rejects.toThrow(/verification timestamp is missing or malformed/i);
+
+      // Non-date / malformed string (proves Date.parse NaN handling does not crash with RangeError: Invalid time value)
       const store2 = new MemoryStore();
       await store2.saveWebsite({ ...validAsset, expiresAt: 'not-a-valid-date' });
       await expect(
@@ -1185,7 +1200,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           siteId: validAsset.siteId,
           scanId: validScanDesc.scanId,
         })
-      ).rejects.toThrow(/expired at|invalid/i);
+      ).rejects.toThrow(/timestamp 'not-a-valid-date' is invalid or malformed/i);
 
       // Past timestamp
       const store3 = new MemoryStore();
@@ -1197,7 +1212,18 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           siteId: validAsset.siteId,
           scanId: validScanDesc.scanId,
         })
-      ).rejects.toThrow(/expired at/i);
+      ).rejects.toThrow(/Domain ownership verification expired at/i);
+
+      // Future valid ISO timestamp succeeds
+      const storeValid = new MemoryStore();
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      await storeValid.saveWebsite({ ...validAsset, expiresAt: futureDate });
+      const validCtx = await createAuthoritativeScanScopeContext(storeValid, {
+        orgId: validAsset.orgId,
+        siteId: validAsset.siteId,
+        scanId: validScanDesc.scanId,
+      });
+      expect(validCtx.expiresAt).toBe(Date.parse(futureDate));
     });
 
     it('createAuthoritativeScanScopeContext enforces non-empty trimmed identity strings and valid subdomains', async () => {
@@ -1311,11 +1337,12 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
       const getScanContextWithPorts = async (allowedPorts?: number[]) => {
         const store = new MemoryStore();
         await store.saveWebsite(validAsset);
+        const serverPolicy = allowedPorts ? createServerScanPolicy({ allowedPorts }) : undefined;
         return createAuthoritativeScanScopeContext(store, {
           orgId: validAsset.orgId,
           siteId: validAsset.siteId,
           scanId: 'scan-ports-001',
-          allowedPorts,
+          serverPolicy,
         });
       };
 
@@ -1684,101 +1711,116 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         }).toThrow();
       });
 
-      it('strictly validates caller-requested methods against server-controlled policy and rejects prohibited verbs', async () => {
+      it('rejects client-controlled method and port expansion in raw request parameters', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        // 1. Raw caller parameter attempting to authorize non-default method POST without serverPolicy is rejected
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-expand-method',
+            allowedMethods: ['GET', 'POST'],
+          })
+        ).rejects.toThrow(/Arbitrary client request parameters cannot authorize non-default HTTP methods/i);
+
+        // 2. Raw caller parameter attempting to authorize non-standard port 8080 without serverPolicy is rejected
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-expand-port',
+            allowedPorts: [8080],
+          })
+        ).rejects.toThrow(/Arbitrary client request parameters cannot authorize non-standard destination ports/i);
+
+        // 3. Forged serverPolicy object not minted by createServerScanPolicy is rejected
+        const forgedPolicy = {
+          allowedMethods: ['GET', 'POST'],
+          allowedPorts: [8080],
+        } as any;
+
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-forged-policy',
+            serverPolicy: forgedPolicy,
+          })
+        ).rejects.toThrow(/Untrusted or forged server scan policy rejected/i);
+
+        // 4. Client-supplied RegExp in excludedPaths is rejected with MALFORMED_URL
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-regexp-excl',
+            excludedPaths: [/^\/admin/ as any],
+          })
+        ).rejects.toThrow(/Excluded path entries must be non-empty strings\. RegExp instances are prohibited/i);
+      });
+
+      it('strictly validates methods against server-controlled policy in createServerScanPolicy and rejects prohibited verbs', async () => {
         const store = new MemoryStore();
         await store.saveWebsite(validAsset);
 
         // TRACE method is prohibited
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-methods-trace',
-            allowedMethods: ['GET', 'TRACE'],
-          })
-        ).rejects.toThrow(/HTTP method 'TRACE' is prohibited by server-side scan policy/i);
+        expect(() => {
+          createServerScanPolicy({ allowedMethods: ['GET', 'TRACE'] });
+        }).toThrow(/HTTP method 'TRACE' is prohibited by server-side scan policy/i);
 
         // CONNECT method is prohibited
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-methods-connect',
-            allowedMethods: ['CONNECT'],
-          })
-        ).rejects.toThrow(/HTTP method 'CONNECT' is prohibited by server-side scan policy/i);
+        expect(() => {
+          createServerScanPolicy({ allowedMethods: ['CONNECT'] });
+        }).toThrow(/HTTP method 'CONNECT' is prohibited by server-side scan policy/i);
 
         // Arbitrary unknown method is prohibited
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-methods-invalid',
-            allowedMethods: ['EVIL_VERB'],
-          })
-        ).rejects.toThrow(/HTTP method 'EVIL_VERB' is prohibited by server-side scan policy/i);
+        expect(() => {
+          createServerScanPolicy({ allowedMethods: ['EVIL_VERB'] });
+        }).toThrow(/HTTP method 'EVIL_VERB' is prohibited by server-side scan policy/i);
 
-        // Permitted methods are allowed, normalized to uppercase, deduplicated, and frozen
+        // Permitted methods are allowed, normalized to uppercase, deduplicated, and frozen via server policy
+        const serverPolicy = createServerScanPolicy({
+          allowedMethods: ['get', 'post', 'GET'],
+        });
         const validContext = await createAuthoritativeScanScopeContext(store, {
           orgId: validAsset.orgId,
           siteId: validAsset.siteId,
           scanId: 'scan-methods-valid',
-          allowedMethods: ['get', 'post', 'GET'],
+          serverPolicy,
         });
 
         expect(validContext.allowedMethods).toEqual(['GET', 'POST']);
         expect(Object.isFrozen(validContext.allowedMethods)).toBe(true);
       });
 
-      it('validates port ranges and categorically rejects blocked internal ports at context creation', async () => {
-        const store = new MemoryStore();
-        await store.saveWebsite(validAsset);
-
+      it('validates port ranges and categorically rejects blocked internal ports at server policy creation', async () => {
         // Out of range port (0)
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-ports-zero',
-            allowedPorts: [0],
-          })
-        ).rejects.toThrow(/Invalid destination port '0'/i);
+        expect(() => {
+          createServerScanPolicy({ allowedPorts: [0] });
+        }).toThrow(/Invalid destination port '0'/i);
 
         // Out of range port (70000)
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-ports-high',
-            allowedPorts: [70000],
-          })
-        ).rejects.toThrow(/Invalid destination port '70000'/i);
+        expect(() => {
+          createServerScanPolicy({ allowedPorts: [70000] });
+        }).toThrow(/Invalid destination port '70000'/i);
 
         // Non-integer port
-        await expect(
-          createAuthoritativeScanScopeContext(store, {
-            orgId: validAsset.orgId,
-            siteId: validAsset.siteId,
-            scanId: 'scan-ports-float',
-            allowedPorts: [80.5],
-          })
-        ).rejects.toThrow(/Invalid destination port '80.5'/i);
+        expect(() => {
+          createServerScanPolicy({ allowedPorts: [80.5] });
+        }).toThrow(/Invalid destination port '80.5'/i);
 
         // Blocked internal ports: 22 (SSH), 25 (SMTP), 3306 (MySQL), 6379 (Redis)
         const blockedPortsToTest = [22, 25, 3306, 6379];
         for (const blockedPort of blockedPortsToTest) {
-          await expect(
-            createAuthoritativeScanScopeContext(store, {
-              orgId: validAsset.orgId,
-              siteId: validAsset.siteId,
-              scanId: `scan-ports-blocked-${blockedPort}`,
-              allowedPorts: [blockedPort],
-            })
-          ).rejects.toThrow(/prohibited internal infrastructure port/i);
+          expect(() => {
+            createServerScanPolicy({ allowedPorts: [blockedPort] });
+          }).toThrow(/prohibited internal infrastructure port/i);
         }
       });
 
-      it('unconditionally enforces mandatory server-side excluded paths that cannot be removed by caller', async () => {
+      it('unconditionally enforces mandatory server-side excluded paths and rejects RegExp exclusions', async () => {
         const store = new MemoryStore();
         await store.saveWebsite(validAsset);
 
@@ -1793,7 +1835,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           expect(contextDefault.excludedPaths).toContain(mandatory);
         }
 
-        // Caller provides custom excluded path
+        // Caller provides custom string excluded path
         const contextCustom = await createAuthoritativeScanScopeContext(store, {
           orgId: validAsset.orgId,
           siteId: validAsset.siteId,
@@ -1806,9 +1848,14 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         }
         expect(contextCustom.excludedPaths).toContain('/internal/admin');
         expect(Object.isFrozen(contextCustom.excludedPaths)).toBe(true);
+
+        // RegExp in additionalExcludedPaths is rejected by createServerScanPolicy
+        expect(() => {
+          createServerScanPolicy({ additionalExcludedPaths: [/^\/secret/ as any] });
+        }).toThrow(/Excluded path entries must be non-empty strings\. RegExp instances are prohibited/i);
       });
 
-      it('proves post-creation tampering with caller argument arrays does not affect the minted context', async () => {
+      it('proves post-creation tampering with caller argument arrays does not affect the minted context or policy', async () => {
         const store = new MemoryStore();
         await store.saveWebsite(validAsset);
 
@@ -1816,13 +1863,17 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         const mutablePorts = [8080, 8443];
         const mutableExcluded = ['/secret'];
 
+        const policy = createServerScanPolicy({
+          allowedMethods: mutableMethods,
+          allowedPorts: mutablePorts,
+          additionalExcludedPaths: mutableExcluded,
+        });
+
         const context = await createAuthoritativeScanScopeContext(store, {
           orgId: validAsset.orgId,
           siteId: validAsset.siteId,
           scanId: 'scan-tamper-test',
-          allowedMethods: mutableMethods,
-          allowedPorts: mutablePorts,
-          excludedPaths: mutableExcluded,
+          serverPolicy: policy,
         });
 
         // Caller mutates the original arrays after minting
@@ -1830,12 +1881,35 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         mutablePorts.push(22);
         mutableExcluded.length = 0; // attempt to wipe excluded paths
 
-        // Context remains completely unaffected and pristine
+        // Context and policy remain completely unaffected and pristine
         expect(context.allowedMethods).not.toContain('TRACE');
         expect(context.allowedMethods).toEqual(['GET', 'POST']);
         expect(context.allowedPorts).not.toContain(22);
         expect(context.allowedPorts).toEqual([8080, 8443]);
         expect(context.excludedPaths).toContain('/secret');
+      });
+
+      it('protects allowed-method policy collection from consumer mutation via predicate', async () => {
+        // Valid methods check case-insensitively
+        const allowedMethods = ['GET', 'get', 'HEAD', 'head', 'POST', 'post', 'PUT', 'put', 'DELETE', 'delete', 'PATCH', 'patch', 'OPTIONS', 'options'];
+        for (const method of allowedMethods) {
+          expect(isServerControlledAllowedMethod(method)).toBe(true);
+        }
+
+        // Prohibited and unknown methods return false
+        const prohibitedMethods = ['TRACE', 'CONNECT', 'TRACK', 'DEBUG', 'UNKNOWN', '', null as any, undefined as any, 123 as any];
+        for (const method of prohibitedMethods) {
+          expect(isServerControlledAllowedMethod(method)).toBe(false);
+        }
+
+        // Ensure SERVER_CONTROLLED_ALLOWED_METHODS_SET is not exported
+        const contextAuthorityModule = await import('../../src/scanner/transport/context-authority.js');
+        expect((contextAuthorityModule as any).SERVER_CONTROLLED_ALLOWED_METHODS_SET).toBeUndefined();
+        expect((contextAuthorityModule as any).SERVER_CONTROLLED_ALLOWED_METHODS).toBeUndefined();
+
+        const transportIndexModule = await import('../../src/scanner/transport/index.js');
+        expect((transportIndexModule as any).SERVER_CONTROLLED_ALLOWED_METHODS_SET).toBeUndefined();
+        expect((transportIndexModule as any).SERVER_CONTROLLED_ALLOWED_METHODS).toBeUndefined();
       });
     });
 
@@ -1936,7 +2010,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             orgId: validAsset.orgId,
             siteId: validAsset.siteId,
             scanId: 'scan-hbh-001',
-            allowedPorts: [port],
+            serverPolicy: createServerScanPolicy({ allowedPorts: [port] }),
           });
 
           await client.get(`http://primary.example.com:${port}/hbh-comprehensive`, {
@@ -2028,7 +2102,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             orgId: validAsset.orgId,
             siteId: validAsset.siteId,
             scanId: 'scan-redir-001',
-            allowedPorts: [port1, port2],
+            serverPolicy: createServerScanPolicy({ allowedPorts: [port1, port2] }),
           });
 
           const res = await client.get(`http://primary.example.com:${port1}/initial`, {
