@@ -242,56 +242,32 @@ export function isProhibitedIp(ip: string): boolean {
     const w0 = words[0]!;
     const w1 = words[1]!;
 
-    // ::/128 Unspecified
-    if (words.every((w) => w === 0)) return true;
-
-    // ::1/128 Loopback
-    if (words.slice(0, 7).every((w) => w === 0) && words[7] === 1) return true;
-
-    // ::ffff:0:0/96 (IPv4-mapped IPv6, RFC 4291)
-    if (words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) {
-      const v4: [number, number, number, number] = [
-        (words[6]! >>> 8) & 255,
-        words[6]! & 255,
-        (words[7]! >>> 8) & 255,
-        words[7]! & 255,
-      ];
-      return isProhibitedIpv4Bytes(v4);
-    }
-
-    // ::ffff:0:0:0/96 (SIIT - Stateless IP/ICMP Translation IPv4-translated, RFC 7915 / RFC 2765)
-    // Prohibited entirely as an internal translation prefix without global reachability per RFC 6890
-    if (words.slice(0, 4).every((w) => w === 0) && words[4] === 0xffff && words[5] === 0) {
-      return true;
-    }
-
-    // ::0:0/96 (IPv4-compatible IPv6, deprecated RFC 4291)
+    // 1. Explicit assessment: ::0:0/96 (IPv4-compatible IPv6, deprecated RFC 4291 e.g. ::8.8.8.8)
+    // Strictly prohibited to prevent SSRF filtering bypasses.
     if (words.slice(0, 6).every((w) => w === 0)) {
-      const v4: [number, number, number, number] = [
-        (words[6]! >>> 8) & 255,
-        words[6]! & 255,
-        (words[7]! >>> 8) & 255,
-        words[7]! & 255,
-      ];
-      return isProhibitedIpv4Bytes(v4);
-    }
-
-    // 64:ff9b::/96 (Well-Known Prefix for NAT64, RFC 6052)
-    if (w0 === 0x0064 && w1 === 0xff9b && words[2] === 0 && words[3] === 0 && words[4] === 0 && words[5] === 0) {
       return true;
     }
 
-    // 64:ff9b:1::/48 (Local-Use NAT64, RFC 8215)
-    if (w0 === 0x0064 && w1 === 0xff9b && words[2] === 0x0001) {
+    // 2. Positive IPv6 Global-Unicast Policy (RFC 4291 section 2.4).
+    // By default, only Global Unicast space (2000::/3) is routable on the public IPv6 internet.
+    // In word 0, the top 3 bits must match 001 (0x2000). Any address outside 2000::/3 is prohibited:
+    // - ::/128 (Unspecified)
+    // - ::1/128 (Loopback)
+    // - ::ffff:0:0/96 (IPv4-mapped IPv6, RFC 4291 / RFC 6890 Table 20 non-global)
+    // - ::ffff:0:0:0/96 (SIIT IPv4-translated, RFC 7915)
+    // - 64:ff9b::/96 & 64:ff9b:1::/48 (NAT64)
+    // - 100::/64 (Discard-only)
+    // - 4000::/3 through e000::/3 (Unallocated / Reserved e.g. 4000::1, f000::1, fe00::1)
+    // - fc00::/7 (Unique Local Address - ULA e.g. fc00::1, fd00:ec2::254 IMDSv6)
+    // - fe80::/10 (Link-Local Unicast)
+    // - fec0::/10 (Site-Local Unicast, deprecated)
+    // - ff00::/8 (Multicast)
+    if ((w0 & 0xe000) !== 0x2000) {
       return true;
     }
 
-    // 100::/64 (Discard-only, RFC 6666)
-    if (w0 === 0x0100 && w1 === 0 && words[2] === 0 && words[3] === 0) {
-      return true;
-    }
-
-    // 2002::/16 (6to4, RFC 3056) - validate embedded IPv4 (bytes 2..5)
+    // 3. Preserved exclusions within 2000::/3:
+    // - 2002::/16 (6to4, RFC 3056) - validate embedded IPv4 (bytes 2..5)
     if (w0 === 0x2002) {
       const v4: [number, number, number, number] = [
         (words[1]! >>> 8) & 255,
@@ -302,41 +278,29 @@ export function isProhibitedIp(ip: string): boolean {
       return isProhibitedIpv4Bytes(v4);
     }
 
-    // 2001::/23 (IETF Special-Purpose Block, RFC 6890)
+    // - 2001::/23 (IETF Special-Purpose Block, RFC 6890)
     // Covers:
-    // - 2001::/32 (Teredo, RFC 4380)
-    // - 2001:1::/32 (PCP Anycast, RFC 7723)
-    // - 2001:2::/48 (BMWG Benchmarking, RFC 5180)
-    // - 2001:3::/32 (AMT, RFC 7450)
-    // - 2001:4:112::/48 (AS112, RFC 7535)
-    // - 2001:10::/28 (ORCHID, RFC 4843)
-    // - 2001:20::/28 (ORCHIDv2, RFC 7343)
-    // - 2001:30::/28 (Drone ID DETs, RFC 9374)
+    //   - 2001::/32 (Teredo, RFC 4380)
+    //   - 2001:1::/32 (PCP Anycast, RFC 7723)
+    //   - 2001:2::/48 (BMWG Benchmarking, RFC 5180)
+    //   - 2001:3::/32 (AMT, RFC 7450)
+    //   - 2001:4:112::/48 (AS112, RFC 7535)
+    //   - 2001:10::/28 (ORCHID, RFC 4843)
+    //   - 2001:20::/28 (ORCHIDv2, RFC 7343)
+    //   - 2001:30::/28 (Drone ID DETs, RFC 9374)
     if (w0 === 0x2001 && (w1 & 0xfe00) === 0x0000) {
       return true;
     }
 
-    // 2001:db8::/32 (Documentation, RFC 3849)
+    // - 2001:db8::/32 (Documentation, RFC 3849)
     if (w0 === 0x2001 && w1 === 0x0db8) {
       return true;
     }
 
-    // 3fff::/20 (Documentation, RFC 9637)
+    // - 3fff::/20 (Documentation, RFC 9637)
     if (w0 === 0x3fff && (w1 & 0xf000) === 0x0000) {
       return true;
     }
-
-    // fc00::/7 (Unique Local Address - ULA, covers fc00:: to fdff::, including fd00:ec2::254 IMDSv6)
-    if ((w0 & 0xfe00) === 0xfc00) return true;
-
-    // fe80::/10 (Link-Local Unicast, covers fe80:: to febf::)
-    if ((w0 & 0xffc0) === 0xfe80) return true;
-
-    // fec0::/10 (Site-Local, deprecated RFC 3879)
-    if ((w0 & 0xffc0) === 0xfec0) return true;
-
-    // ff00::/8 (Multicast)
-    if ((w0 & 0xff00) === 0xff00) return true;
 
     return false;
   }

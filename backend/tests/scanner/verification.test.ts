@@ -691,6 +691,23 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       expect(isProhibitedIp('169.254.169.254')).toBe(true);
       expect(isProhibitedIp('100.64.0.1')).toBe(true);
 
+      // Positive IPv6 Global-Unicast Policy (RFC 4291 section 2.4): addresses outside 2000::/3 are rejected by default
+      expect(isProhibitedIp('4000::1')).toBe(true); // outside 2000::/3 (unallocated)
+      expect(isProhibitedIp('fe00::1')).toBe(true); // outside 2000::/3 (reserved)
+      expect(isProhibitedIp('f000::1')).toBe(true); // outside 2000::/3 (reserved)
+
+      // Deprecated IPv4-compatible IPv6 (::0:0/96, RFC 4291 section 2.5.5.1) - strictly prohibited
+      expect(isProhibitedIp('::8.8.8.8')).toBe(true); // IPv4-compatible deprecated
+      expect(isProhibitedIp('::127.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::10.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::93.184.216.34')).toBe(true);
+
+      // IPv4-mapped IPv6 (::ffff:0:0/96, RFC 4291 / RFC 6890 Table 20 non-global)
+      expect(isProhibitedIp('::ffff:127.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::ffff:10.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::ffff:169.254.169.254')).toBe(true);
+      expect(isProhibitedIp('::ffff:93.184.216.34')).toBe(true);
+
       // IPv6 Loopback, Unspecified, ULA, Link-Local, Site-Local, and IMDSv6
       expect(isProhibitedIp('::1')).toBe(true);
       expect(isProhibitedIp('::')).toBe(true);
@@ -701,17 +718,6 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       expect(isProhibitedIp('fc00::1')).toBe(true);
       expect(isProhibitedIp('fd00::1')).toBe(true);
       expect(isProhibitedIp('fd00:ec2::254')).toBe(true);
-
-      // IPv4-mapped IPv6 (::ffff:0:0/96)
-      expect(isProhibitedIp('::ffff:127.0.0.1')).toBe(true);
-      expect(isProhibitedIp('::ffff:10.0.0.1')).toBe(true);
-      expect(isProhibitedIp('::ffff:169.254.169.254')).toBe(true);
-      expect(isProhibitedIp('::ffff:93.184.216.34')).toBe(false); // public IPv4 mapped
-
-      // IPv4-compatible IPv6 (deprecated ::0:0/96)
-      expect(isProhibitedIp('::127.0.0.1')).toBe(true);
-      expect(isProhibitedIp('::10.0.0.1')).toBe(true);
-      expect(isProhibitedIp('::93.184.216.34')).toBe(false); // public IPv4 compatible
 
       // SIIT (::ffff:0:0:0/96, RFC 7915 / RFC 2765)
       expect(isProhibitedIp('::ffff:0:127.0.0.1')).toBe(true);
@@ -1084,7 +1090,13 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
         'http://[fd00:ec2::254]/latest/meta-data',
         'http://[::ffff:127.0.0.1]/test',
         'http://[::ffff:169.254.169.254]/test',
+        'http://[::ffff:93.184.216.34]/test',
         'http://[::127.0.0.1]/test',
+        'http://[::8.8.8.8]/test',
+        // Outside 2000::/3 (Positive Global-Unicast Policy)
+        'http://[4000::1]/test',
+        'http://[fe00::1]/test',
+        'http://[f000::1]/test',
         // SIIT
         'http://[::ffff:0:127.0.0.1]/test',
         'http://[::ffff:0:169.254.169.254]/test',
