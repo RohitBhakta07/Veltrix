@@ -1,10 +1,10 @@
 # VELTRIX: Phase 8 Threat Model Specification — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0 (Architecture Review Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Threat Modeling & Attack Surface Analysis  
 **Methodology:** STRIDE / OWASP Top 10 / Cloud Security Alliance  
-**Status:** DRAFT / IN REVIEW  
+**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -21,20 +21,20 @@ flowchart LR
     end
 
     subgraph TrustBoundary1["Trust Boundary 1: Isolated Scanner Sandbox"]
-        Transport["SafeHttpClient\n(DNS Pinning & SSRF Filter)"]
+        Transport["SafeHttpClient\n(DNS Pinning, SSRF Filter, Proxy Bypass)"]
         Parser["HTML / HTTP Parser"]
         Analyzer["Passive & Active Rule Analyzers"]
     end
 
     subgraph TrustBoundary2["Trust Boundary 2: VELTRIX Control Plane"]
         API["REST API Gateway"]
-        AuthZ["RBAC & Scope Guard"]
+        AuthZ["RBAC (SUPER_ADMIN, ORG_ADMIN, SECURITY_ANALYST, READ_ONLY_VIEWER)"]
         Orchestrator["Scan Orchestrator"]
     end
 
     subgraph TrustBoundary3["Trust Boundary 3: Secure Data & Signing Plane"]
         DB[("DynamoDB / MemoryStore")]
-        Authority["InternalEvidenceAuthority (Phase 7)"]
+        Authority["InternalEvidenceAuthority (Phase 7 HMAC-SHA256 & Replay Registry)"]
         KMS[("AWS KMS / Secrets Manager")]
     end
 
@@ -57,14 +57,14 @@ flowchart LR
 | Threat ID | Threat Description | Attack Vector | Impact | Mitigation Strategy |
 | :--- | :--- | :--- | :--- | :--- |
 | **TH-SPOOF-01** | **Domain Ownership Forgery** | Attacker registers target domain owned by a third party and attempts to verify it using race conditions or forged DNS TXT queries. | Unauthorized scanning of third-party infrastructure. | Unique cryptographically random tokens (`vltx_tok_<32Hex>`), authoritative DNS lookup bypassing local recursive resolver caches, multi-step verification. |
-| **TH-SPOOF-02** | **Cross-Tenant Domain Hijacking** | Tenant B attempts to verify a domain already registered and verified by Tenant A. | Unauthorized visibility into target vulnerability posture. | Strict domain uniqueness constraint in database; `GSI2_PK: DOMAIN#{primaryDomain}` conditional write rejects registration if domain is already claimed by an active organization. |
-| **TH-SPOOF-03** | **Identity / Role Spoofing** | User with read-only access attempts to dispatch or abort scans. | Unauthorized scan activity or disruption. | Enforce strict JWT signature validation and role checks (`SECURITY_ADMIN` required for registration and deep scans; `SECURITY_ANALYST` for standard scans). |
+| **TH-SPOOF-02** | **Cross-Tenant Domain Hijacking** | Tenant B attempts to verify a domain already registered and verified by Tenant A. | Unauthorized visibility into target vulnerability posture. | Strict domain uniqueness constraint in database; `TransactWriteItems` with `PK = DOMAIN#{primaryDomain}`, `SK = OWNERSHIP` rejects registration if domain is already claimed by an active organization. |
+| **TH-SPOOF-03** | **Identity / Role Spoofing** | User with read-only access attempts to dispatch or abort scans. | Unauthorized scan activity or disruption. | Enforce strict JWT signature validation and canonical production roles: `SUPER_ADMIN` and `ORG_ADMIN` required for registration and deep scans; `SECURITY_ANALYST` for standard scans; `READ_ONLY_VIEWER` and `AUDITOR` are strictly read-only. |
 
 ### 2.2 Tampering
 | Threat ID | Threat Description | Attack Vector | Impact | Mitigation Strategy |
 | :--- | :--- | :--- | :--- | :--- |
 | **TH-TAMP-01** | **Scan Scope Tampering** | Attacker modifies `targetUrl` or `allowedHosts` while scan is running to pivot to unauthorized networks. | Out-of-scope scanning, illegal network probing. | Immutable scan job record; `ScopeGuard` re-validates every individual outbound request against the frozen scan scope snapshot stored in the database. |
-| **TH-TAMP-02** | **Vulnerability Evidence Alteration** | Malicious insider alters stored request/response evidence to frame an application or hide a critical finding. | Compromised auditability, false reports. | Cryptographic evidence signing via Phase 7 `InternalEvidenceAuthority`; any modification invalidates the HMAC-SHA256 signature and triggers security alerts. |
+| **TH-TAMP-02** | **Vulnerability Evidence Alteration** | Malicious insider alters stored request/response evidence to frame an application or hide a critical finding. | Compromised auditability, false reports. | Cryptographic evidence signing via Phase 7 `InternalEvidenceAuthority.prototype.createContext()`; canonical serialization over complete context and single-use nonce registered in `DynamoDBReplayRegistry`. Any modification invalidates the HMAC-SHA256 signature. |
 | **TH-TAMP-03** | **Payload Infiltration** | User submits destructive SQL/shell commands within scan profile parameters. | Unintended destructive actions against target. | Scan profiles only permit select, predefined enumerations; free-form payload injection is architecturally prohibited in the engine. |
 
 ### 2.3 Repudiation
@@ -80,6 +80,8 @@ flowchart LR
 | **TH-INFO-02** | **SSRF to Internal Microservices & VPC** | Target redirects or resolves to internal VPC IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`). | Reconnaissance of internal databases, Redis caches, and private microservices. | Pre-flight DNS validation rejects RFC 1918 addresses; `net.createConnection` pins outbound sockets to public IPs only. |
 | **TH-INFO-03** | **Customer Secret Leakage in Evidence** | Scanner captures HTTP request/response containing customer API keys, passwords, or bearer tokens. | Exposure of sensitive production credentials to SOC analysts. | Automated secret scrubber executes prior to evidence storage, stripping Authorization headers, session cookies, and regex-matched credential patterns. |
 | **TH-INFO-04** | **Cross-Tenant Findings Leakage** | Tenant A queries API with `findingId` belonging to Tenant B. | Data breach of competitor vulnerability data. | DynamoDB queries strictly require `orgId` as partition key component (`ORG#{orgId}#SITE#{siteId}`); API gateway verifies JWT `orgId` matches requested resource. |
+| **TH-INFO-05** | **Ambient Proxy SSRF Bypass** | Host environment has `HTTP_PROXY` or `HTTPS_PROXY` set, causing Node.js HTTP clients to delegate DNS resolution and TCP connection to an unverified proxy. | Proxy connects to private/internal networks on behalf of scanner, bypassing local IP filters. | `SafeHttpClient` explicitly ignores ambient proxy environment variables and enforces direct socket connections. |
+| **TH-INFO-06** | **Credential Exposure in Reproduction Commands** | Scanner generates reproduction curl snippet containing live bearer tokens or session cookies captured from crawling. | Plaintext credentials exposed in vulnerability reports and exports. | Reproduction command generator scrubs all `Authorization`, `Cookie`, and sensitive query parameters, replacing them with `[REDACTED]`. |
 
 ### 2.5 Denial of Service (DoS)
 | Threat ID | Threat Description | Attack Vector | Impact | Mitigation Strategy |
@@ -93,7 +95,7 @@ flowchart LR
 | Threat ID | Threat Description | Attack Vector | Impact | Mitigation Strategy |
 | :--- | :--- | :--- | :--- | :--- |
 | **TH-EOP-01** | **Scanner Parser Exploitation (RCE)** | Target serves crafted HTML/XML/JSON payload designed to exploit memory safety or prototype pollution bugs in the scanner's runtime. | Remote Code Execution inside scanner worker sandbox. | Scanner runs in unprivileged container/worker sandbox with dropped capabilities, read-only root filesystem, and isolated network namespace. All parsers use hardened, well-tested zero-eval libraries. |
-| **TH-EOP-02** | **Privilege Escalation via Profile Override** | Analyst user submits request with internal flags enabling unauthorized active or deep scans. | Execution of unapproved aggressive probes. | Server-side profile validation; role checks verify caller role against requested scan profile before queueing. |
+| **TH-EOP-02** | **Privilege Escalation via Profile Override** | Analyst user submits request with internal flags enabling unauthorized deep scans. | Execution of unapproved aggressive probes. | Server-side profile validation; role checks verify caller role against canonical permissions (`DEEP_ASSESSMENT` requires `SUPER_ADMIN` or `ORG_ADMIN`). |
 
 ---
 
@@ -103,7 +105,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Scanner as Scanner Transport
+    participant Scanner as Scanner Transport (SafeHttpClient)
     participant EvilDNS as Attacker DNS Server (TTL=0)
     participant Target as Evil Target Server (Public IP 203.0.113.5)
     participant IMDS as AWS Metadata Service (169.254.169.254)
@@ -132,12 +134,12 @@ An attacker might serve a valid public webpage that issues an HTTP 302 redirect 
 GET https://verified-site.com/redirect?to=http://169.254.169.254/latest/meta-data/
 ```
 **VELTRIX Defense Mechanism:**
-1. Automated redirects are disabled in standard libraries (`maxRedirects: 0`).
+1. Automated redirects are disabled in standard libraries (`maxRedirects: 0` or `redirect: 'manual'`).
 2. When a `3xx` response is received, `SafeHttpClient` intercepts the `Location` header.
 3. The redirect target is validated through `ScopeGuard`:
    - Must match `http:` or `https:`.
    - Host must match verified domains (or explicitly authorized redirect policy).
-   - Pre-flight DNS resolution validates destination IP against the complete SSRF denylist.
+   - Pre-flight DNS resolution validates destination IP against the complete SSRF denylist across canonical dotted, octal, hex, and dword formats.
 4. If the destination resolves to `169.254.169.254` or any private range, the redirect is immediately aborted, the connection terminated, and a security alert is recorded.
 
 ---

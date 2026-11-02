@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Task Breakdown — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0 (Architecture Review Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Engineering Task Breakdown & Work Breakdown Structure (WBS)  
-**Status:** DRAFT / IN REVIEW  
+**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -15,7 +15,7 @@ Phase 8 implements the Authorized Website Vulnerability Assessment Engine. Work 
 ```mermaid
 flowchart TD
     TASK801["TASK-801: Domain Ownership Verification Subsystem"]
-    TASK802["TASK-802: Hardened Safe HTTP Transport (SSRF & DNS Pinning)"]
+    TASK802["TASK-802: Hardened Safe HTTP Transport (SSRF, DNS Pinning & Proxy Bypass)"]
     TASK803["TASK-803: Bounded Crawling & Endpoint Discovery"]
     TASK804["TASK-804: Passive Security Assessment Pipeline"]
     TASK805["TASK-805: Controlled Non-Destructive Active Probes"]
@@ -44,7 +44,7 @@ flowchart TD
 - **Priority:** P0 (Blocker)  
 - **Complexity:** Medium (3 SP)  
 - **Dependencies:** None  
-- **Description:** Implement the multi-method domain ownership verification subsystem that establishes cryptographic authorization prior to any scanning activity.
+- **Description:** Implement the multi-method domain ownership verification subsystem that establishes cryptographic authorization prior to any scanning activity. Integrates with existing `backend/src/services/domain-verification.ts` and `backend/src/routes/websites.ts`.
 - **Key Deliverables:**
   - `backend/src/scanner/verification/verifier.ts`
   - `backend/src/scanner/verification/dns-verifier.ts`
@@ -56,7 +56,7 @@ flowchart TD
   3. Implements HTTP challenge file verification at `/.well-known/veltrix-challenge/<token>`.
   4. Implements HTML `<meta name="veltrix-site-verification">` challenge parsing.
   5. Enforces 90-day authorization lifetime, 7-day grace period, and expiration transitions.
-  6. Enforces tenant domain uniqueness constraint to prevent cross-tenant domain hijacking.
+  6. Enforces tenant domain uniqueness constraint to prevent cross-tenant domain hijacking via DynamoDB transactional writes (`PK = DOMAIN#{domain}`, `SK = OWNERSHIP`).
 
 ---
 
@@ -64,19 +64,21 @@ flowchart TD
 - **Priority:** P0 (Blocker)  
 - **Complexity:** High (5 SP)  
 - **Dependencies:** None  
-- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` overrides that enforce SSRF filtering, socket-level IP pinning, hop-by-hop redirect validation, and stream safeguards.
+- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` overrides that enforce SSRF filtering, socket-level IP pinning, ambient proxy bypass, hop-by-hop redirect validation, and stream safeguards.
 - **Key Deliverables:**
   - `backend/src/scanner/transport/safe-http-client.ts`
   - `backend/src/scanner/transport/ip-validator.ts`
   - `backend/src/scanner/transport/dns-resolver.ts`
   - `backend/src/scanner/transport/redirect-handler.ts`
 - **Acceptance Criteria:**
-  1. Validates all resolved IPv4 and IPv6 addresses against private, loopback, link-local, carrier-grade NAT, and cloud metadata ranges (`169.254.169.254`).
-  2. Directs socket creation (`net.createConnection`) to the validated, pinned IP address, completely eliminating Time-Of-Check to Time-Of-Use (TOCTOU) DNS rebinding.
-  3. Preserves original hostname for TLS SNI and certificate hostname verification.
-  4. Intercepts `3xx` redirects at each hop, validating destination host and IP before issuing subsequent requests (max 5 hops).
-  5. Implements response decompression stream limits (max 10 MB) to prevent zip bombs.
-  6. Enforces connection timeout (5s), response header timeout (10s), and body idle timeout (15s).
+  1. Validates all resolved IPv4 and IPv6 addresses against private, loopback, link-local, carrier-grade NAT, and cloud metadata ranges (`169.254.169.254`, `[fd00:ec2::254]`).
+  2. Normalizes non-canonical numeric IP representations (octal, hex, dword, zero-compressed) prior to validation.
+  3. Explicitly bypasses ambient `HTTP_PROXY` and `HTTPS_PROXY` to prevent proxy-based SSRF bypass.
+  4. Directs socket creation (`net.createConnection`) to the validated, pinned IP address, completely eliminating Time-Of-Check to Time-Of-Use (TOCTOU) DNS rebinding.
+  5. Preserves original hostname for TLS SNI and certificate hostname verification (`rejectUnauthorized: true`).
+  6. Intercepts `3xx` redirects at each hop, validating destination host and IP before issuing subsequent requests (max 5 hops).
+  7. Implements response decompression stream limits (max 10 MB) to prevent zip bombs.
+  8. Enforces connection timeout (5s), response header timeout (10s), and body idle timeout (15s).
 
 ---
 
@@ -145,7 +147,7 @@ flowchart TD
 - **Priority:** P0 (Core Integrity)  
 - **Complexity:** Medium (3 SP)  
 - **Dependencies:** TASK-804, TASK-805  
-- **Description:** Implement multi-factor severity/confidence scoring and integrate with Phase 7 `InternalEvidenceAuthority` to cryptographically sign all vulnerability evidence.
+- **Description:** Implement multi-factor severity/confidence scoring and integrate with Phase 7 `InternalEvidenceAuthority` using `createContext()` with approved verifier `'core-scanner:active-audit'`.
 - **Key Deliverables:**
   - `backend/src/scanner/scoring/scoring-engine.ts`
   - `backend/src/scanner/scoring/cvss-calculator.ts`
@@ -154,9 +156,9 @@ flowchart TD
 - **Acceptance Criteria:**
   1. Computes CVSS v3.1 base score and assigns confidence tier (`CONFIRMED`, `HIGH`, `MEDIUM`, `LOW`).
   2. Implements differential baseline comparison to suppress false positives.
-  3. Scrubs sensitive secrets (Authorization tokens, cookies, passwords, API keys) from stored evidence.
+  3. Scrubs sensitive secrets (Authorization tokens, cookies, passwords, API keys) from stored evidence and reproduction curl commands.
   4. Truncates response excerpts to 64 KB maximum.
-  5. Generates `EvidenceContext` and cryptographically signs it via `InternalEvidenceAuthority.prototype.signEvidencePayload()`.
+  5. Generates `InternalTrustedEvidenceContext` signed via `InternalEvidenceAuthority.prototype.createContext()`.
 
 ---
 
@@ -174,7 +176,7 @@ flowchart TD
   1. Enforces rate limits (1–20 RPS) using token-bucket algorithm with backoff on HTTP 429/503.
   2. Enforces concurrency caps: max 1 scan per website asset, max 3 active scans per organization.
   3. Implements atomic job claiming via conditional database updates.
-  4. Coordinates emergency abort: terminates active socket pool within **500 ms** SLO upon abort trigger.
+  4. Coordinates emergency abort: terminates active socket pool within **500 ms** SLO upon abort trigger or website authorization revocation.
   5. Implements 10-second timeout watchdog for unresponsive workers with task kill escalation.
 
 ---
@@ -183,16 +185,16 @@ flowchart TD
 - **Priority:** P1  
 - **Complexity:** Medium (4 SP)  
 - **Dependencies:** TASK-801, TASK-807  
-- **Description:** Expose the scan management, verification, findings, and reporting REST endpoints with strict RBAC and DynamoDB / MemoryStore persistence.
+- **Description:** Expose the scan management, verification, findings, and reporting REST endpoints with canonical production RBAC (`SUPER_ADMIN`, `ORG_ADMIN`, `SECURITY_ANALYST`, `READ_ONLY_VIEWER`, `AUDITOR`) and DynamoDB / MemoryStore persistence.
 - **Key Deliverables:**
-  - `backend/src/api/routes/websites.ts`
-  - `backend/src/api/routes/scans.ts`
-  - `backend/src/api/routes/findings.ts`
+  - `backend/src/routes/websites.ts` (existing router extension)
+  - `backend/src/routes/scans.ts`
+  - `backend/src/routes/findings.ts`
   - `backend/src/scanner/storage/scanner-storage.ts`
 - **Acceptance Criteria:**
-  1. Implements all REST endpoints defined in `specs/phase-8-api-contracts.md`.
-  2. Enforces RBAC permissions (`SECURITY_ADMIN`, `SECURITY_ANALYST`, `SECURITY_VIEWER`).
-  3. Implements DynamoDB single-table/multi-table operations with conditional writes.
+  1. Implements all REST endpoints defined in `specs/phase-8-api-contracts.md` conforming to `ApiResponse<T>` and `ApiErrorResponse`.
+  2. Enforces canonical production RBAC roles (`SUPER_ADMIN`, `ORG_ADMIN`, `SECURITY_ANALYST`, `READ_ONLY_VIEWER`, `AUDITOR`).
+  3. Implements DynamoDB table operations with exact index names (`GSI1-StatusDomain`, `GSI2-DomainLookup`, `GSI1-SiteScans`, `GSI2-ScanFindings`).
   4. Ensures full parity in `MemoryStore` for local development and test execution.
   5. Emits structured audit events to `AuditLog` on all administrative and scan state changes.
 
@@ -212,10 +214,10 @@ flowchart TD
   - `backend/tests/scanner/scan-lifecycle.test.ts`
 - **Acceptance Criteria:**
   1. 100% test pass rate across all new scanner unit, integration, and security suites.
-  2. SSRF attack matrix proves rejection across 100% of IPv4/IPv6 private/metadata variations.
-  3. Verified DNS rebinding mitigation using alternating in-process DNS server.
-  4. Verified sub-500ms emergency abort latency under simulated high-load conditions.
-  5. Confirms production build (`backend/dist`) contains zero test code and passes CI check.
+  2. SSRF attack matrix proves rejection across 100% of IPv4/IPv6 private/metadata variations and alternate encodings.
+  3. Verified DNS rebinding mitigation using alternating in-process DNS server and socket IP pinning.
+  4. Verified sub-500ms emergency abort latency under simulated high-load conditions and domain revocation.
+  5. Confirms production build (`backend/dist`) contains zero test code and passes automated CI check.
 
 ---
 
@@ -223,10 +225,11 @@ flowchart TD
 
 Before merging Phase 8 implementation:
 - [ ] All 7 specification documents reviewed and approved by security leads.
-- [ ] Domain verification strictly gates all scan creation and execution.
-- [ ] Safe transport layer achieves 100% test pass rate across SSRF/rebinding attack matrix.
+- [ ] Domain verification strictly gates all scan creation and execution (`status === 'VERIFIED'`, `!scanBlocked`, `expiresAt > Date.now()`).
+- [ ] Safe transport layer achieves 100% test pass rate across SSRF/rebinding attack matrix and ignores ambient proxies.
 - [ ] Non-destructive active checks confirmed to contain zero mutating SQL/file operations.
-- [ ] Evidence provenance cryptographically verified via Phase 7 `InternalEvidenceAuthority`.
+- [ ] Evidence provenance cryptographically verified via Phase 7 `InternalEvidenceAuthority.prototype.createContext()`.
+- [ ] Secret scrubber verified to redact credentials from reproduction curl commands and evidence headers.
 - [ ] Emergency abort verified to terminate sockets within 500 ms SLO.
 - [ ] Monorepo passes typecheck, build, lint, and all test suites with zero failures.
 - [ ] Automated CI production artifact exclusion check confirms zero test utilities in `dist`.

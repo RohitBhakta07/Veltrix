@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Testing Strategy — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0 (Architecture Review Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Quality Assurance & Security Validation  
-**Status:** DRAFT / IN REVIEW  
+**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -14,8 +14,8 @@ The Phase 8 Vulnerability Assessment Engine involves executing live network requ
 
 Testing must adhere to the following principles:
 1. **Isolated Execution:** No test in the automated CI/CD pipeline shall ever issue an outbound network request to an external third-party internet domain or AWS service. All external systems, DNS servers, and targets are fully emulated using local in-process test servers.
-2. **Adversarial Negative Testing:** Every security control (SSRF filter, DNS pinning, redirect guard, scope boundary, decompressor) must be exercised against comprehensive attack vector payloads.
-3. **Deterministic Evidence Verification:** All tests asserting vulnerability discovery must verify that the Phase 7 `InternalEvidenceAuthority` generated a valid, verifiable cryptographic signature over the finding's `EvidenceContext`.
+2. **Adversarial Negative Testing:** Every security control (SSRF filter, DNS pinning, redirect guard, scope boundary, decompressor, proxy bypass) must be exercised against comprehensive attack vector payloads.
+3. **Deterministic Evidence Verification:** All tests asserting vulnerability discovery must verify that the Phase 7 `InternalEvidenceAuthority` generated a valid, verifiable cryptographic signature over the finding's `InternalTrustedEvidenceContext` using the approved verifier identity `'core-scanner:active-audit'`.
 4. **SLO Verification:** Emergency abort operations must be deterministically benchmarked to guarantee socket teardown within the **500 ms** target SLO.
 
 ---
@@ -42,20 +42,21 @@ pie title Phase 8 Test Distribution
 ### 3.1 Domain Ownership Verification Tests (`tests/unit/verification.test.ts`)
 - **DNS TXT Verification:**
   - Valid TXT record containing exact tenant ID and token $\to$ returns `VERIFIED`.
-  - Missing TXT record $\to$ returns `CHALLENGE_FAILED`.
-  - Mismatched token or wrong organization ID $\to$ returns `CHALLENGE_FAILED`.
-  - DNS resolution error or timeout $\to$ fails closed with `CHALLENGE_FAILED`.
+  - Missing TXT record $\to$ returns `CHALLENGE_VERIFICATION_FAILED`.
+  - Mismatched token or wrong organization ID $\to$ returns `CHALLENGE_VERIFICATION_FAILED`.
+  - DNS resolution error or timeout $\to$ fails closed with `CHALLENGE_VERIFICATION_FAILED`.
 - **HTTP Challenge Verification:**
   - Mock HTTP server returns correct JSON token at `/.well-known/veltrix-challenge/<token>` $\to$ returns `VERIFIED`.
-  - Server returns 404, 500, or invalid JSON $\to$ returns `CHALLENGE_FAILED`.
+  - Server returns 404, 500, or invalid JSON $\to$ returns `CHALLENGE_VERIFICATION_FAILED`.
   - Target URL resolves to an internal/private IP $\to$ caught by SSRF filter, returns `SSRF_BLOCKED`.
 - **HTML Meta Tag Verification:**
   - HTML contains `<meta name="veltrix-site-verification" content="<token>">` $\to$ returns `VERIFIED`.
-  - Missing meta tag, malformed HTML, or mismatched token $\to$ returns `CHALLENGE_FAILED`.
-- **Expiry & Lifecycle Logic:**
+  - Missing meta tag, malformed HTML, or mismatched token $\to$ returns `CHALLENGE_VERIFICATION_FAILED`.
+- **Expiry, Grace Period & Revocation Lifecycle:**
   - Site at 80 days $\to$ active and valid for scans.
-  - Site at 85 days $\to$ marked `GRACE_PERIOD`, scans blocked with `DOMAIN_VERIFICATION_SUSPENDED`.
-  - Site at 91 days $\to$ marked `EXPIRED`, scans rejected with `DOMAIN_NOT_VERIFIED`.
+  - Site at 85 days $\to$ marked `GRACE_PERIOD`, `scanBlocked: true`, scans blocked with `DOMAIN_VERIFICATION_SUSPENDED`.
+  - Site at 91 days $\to$ marked `EXPIRED`, `scanBlocked: true`, scans rejected with `DOMAIN_NOT_VERIFIED`.
+  - `POST /websites/:siteId/revoke` $\to$ sets `status: 'GRACE_PERIOD'`, `scanBlocked: true`, and immediately cancels active scans.
 
 ### 3.2 Scope & Exclusion Guard Tests (`tests/unit/scope-guard.test.ts`)
 - **Allowed Hosts:**
@@ -77,6 +78,7 @@ pie title Phase 8 Test Distribution
   | `0177.0.0.1` | Octal IPv4 | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
   | `0x7f.0.0.1` | Hex IPv4 | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
   | `2130706433` | Dword / Integer | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
+  | `127.1` | Zero-compressed | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
   | `10.0.0.1` | Standard IPv4 | RFC 1918 Private | **REJECTED (`SSRF_BLOCKED`)** |
   | `172.16.0.1` | Standard IPv4 | RFC 1918 Private | **REJECTED (`SSRF_BLOCKED`)** |
   | `192.168.1.1` | Standard IPv4 | RFC 1918 Private | **REJECTED (`SSRF_BLOCKED`)** |
@@ -88,8 +90,12 @@ pie title Phase 8 Test Distribution
   | `fc00::1` | IPv6 | Unique Local | **REJECTED (`SSRF_BLOCKED`)** |
   | `::ffff:127.0.0.1` | IPv4-Mapped IPv6 | Loopback | **REJECTED (`SSRF_BLOCKED`)** |
   | `::ffff:169.254.169.254` | IPv4-Mapped IPv6 | AWS Metadata | **REJECTED (`SSRF_BLOCKED`)** |
+  | `[fd00:ec2::254]` | IPv6 | AWS IMDSv6 | **REJECTED (`SSRF_BLOCKED`)** |
   | `93.184.216.34` | Standard IPv4 | Public Internet IP | **ALLOWED** |
   | `2606:2800:220:1:248:1893:25c8:1946` | Standard IPv6 | Public Internet IP | **ALLOWED** |
+- **Proxy Isolation Test:**
+  - Set `HTTP_PROXY=http://127.0.0.1:8080` in environment.
+  - Verify `SafeHttpClient` bypasses proxy and connects directly to destination socket, preventing proxy-based SSRF.
 
 ### 3.4 Hop-by-Hop Redirect Tests (`tests/unit/redirects.test.ts`)
 - Redirect chain: `https://site.com/start` $\to$ `https://site.com/middle` $\to$ `https://site.com/end` $\to$ followed up to 5 hops.
@@ -116,10 +122,12 @@ pie title Phase 8 Test Distribution
   - Open Redirect: Injected domain reflected in `Location` header on 302 response $\to$ flags `OPEN_REDIRECT_UNVALIDATED`.
 
 ### 3.7 Secret Scrubbing & Evidence Signing Tests (`tests/unit/evidence.test.ts`)
-- Request containing `Authorization: Bearer secret-token-12345` $\to$ scrubbed to `Authorization: Bearer [REDACTED]`.
+- Request containing `Authorization: Bearer secret-token-12345` $\to$ scrubbed to `Authorization: [REDACTED]`.
 - Request containing `Cookie: session=xyz; password=secret` $\to$ scrubbed to `Cookie: session=[REDACTED]; password=[REDACTED]`.
+- Reproduction curl containing `-H 'Authorization: Bearer xyz'` $\to$ sanitized to `-H 'Authorization: [REDACTED]'`.
 - Stored body exceeding 64 KB $\to$ truncated with `[TRUNCATED_AT_64KB]`.
-- Evidence signed with `InternalEvidenceAuthority` $\to$ signature validates; tampered evidence fails signature check.
+- Evidence signed via `InternalEvidenceAuthority.prototype.createContext()` with `'core-scanner:active-audit'` $\to$ signature validates; tampered evidence fails signature check.
+- External API client attempting to inject `trustedEvidenceContext` via public `POST /api/v1/events` or `/api/v1/findings` $\to$ rejected with 400 Bad Request.
 
 ---
 
@@ -165,8 +173,8 @@ pie title Phase 8 Test Distribution
 ## 5. Integration Test Plan (`tests/integration/scan-lifecycle.test.ts`)
 
 Simulates the complete enterprise workflow from asset registration to reporting:
-1. `POST /api/v1/websites`: Register `test-app.local`.
-2. `POST /api/v1/websites/:siteId/verification/confirm`: Verify via mock DNS TXT.
+1. `POST /api/v1/websites`: Register `test-app.local` (returns challenge details).
+2. `POST /api/v1/websites/:siteId/verify`: Verify via mock DNS TXT.
 3. `POST /api/v1/scans`: Launch `STANDARD_ACTIVE` scan against local mock vulnerable server.
 4. Scan worker executes crawl, runs passive analysis, executes canary active probes.
 5. Findings are deduplicated, scored, and signed with `InternalEvidenceAuthority`.
@@ -175,4 +183,4 @@ Simulates the complete enterprise workflow from asset registration to reporting:
    - 1x `MISSING_SECURITY_HEADER` (`MEDIUM`, CVSS 5.0)
    - 1x `INSECURE_COOKIE_ATTRIBUTES` (`LOW`, CVSS 3.0)
 7. Query `GET /api/v1/scans/:scanId/report`: Validates report structure and cryptographic verification status.
-8. Assert audit log contains `SITE_REGISTERED`, `SITE_VERIFIED`, `SCAN_STARTED`, `FINDING_DISCOVERED`, and `SCAN_COMPLETED`.
+8. Assert audit log contains `WEBSITE_REGISTERED`, `WEBSITE_VERIFIED`, `SCAN_STARTED`, `FINDING_DISCOVERED`, and `SCAN_COMPLETED`.

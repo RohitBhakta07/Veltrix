@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Architecture Specification — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0 (Architecture Review Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** System Architecture & Technical Design  
-**Status:** DRAFT / IN REVIEW  
+**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -15,28 +15,28 @@ The VELTRIX Authorized Website Vulnerability Assessment Engine is designed as a 
 ```mermaid
 flowchart TD
     subgraph ControlPlane["Control Plane & API Gateway"]
-        API["REST API Gateway (Express / Fastify)"]
-        AuthZ["Authorization & RBAC Gatekeeper"]
-        DomainVerifier["Domain Ownership Verifier"]
+        API["REST API Gateway (Express)"]
+        AuthZ["RBAC Middleware (SUPER_ADMIN, ORG_ADMIN, SECURITY_ANALYST, READ_ONLY_VIEWER, AUDITOR)"]
+        DomainVerifier["DomainVerificationService (DNS TXT, HTTP Challenge, Meta Tag)"]
     end
 
     subgraph StorageLayer["Persistence & Audit Layer"]
         DB[("Storage Engine (DynamoDB / MemoryStore)")]
         Audit[("Immutable Audit Log")]
-        EvidenceAuth["InternalEvidenceAuthority (Phase 7 HMAC-SHA256)"]
+        EvidenceAuth["InternalEvidenceAuthority (Phase 7 HMAC-SHA256 & DynamoDBReplayRegistry)"]
     end
 
     subgraph Orchestration["Scan Orchestration Subsystem"]
         Orchestrator["Scan Orchestrator"]
         JobQueue["Priority Scan Queue"]
         RateLimiter["Token-Bucket Rate Limiter"]
-        AbortCoordinator["Emergency Abort Coordinator"]
+        AbortCoordinator["Emergency Abort Coordinator (500ms SLO)"]
     end
 
     subgraph ScannerWorker["Isolated Scanner Worker Sandbox"]
         Worker["Scan Worker Task"]
         ScopeGuard["Scope & Exclusion Guard"]
-        SafeTransport["SafeHttpClient (DNS Pinning & SSRF Filter)"]
+        SafeTransport["SafeHttpClient (DNS Pinning, SSRF Filter, Proxy Bypass)"]
         Crawler["Bounded HTML / Endpoint Crawler"]
         
         subgraph AnalysisPipelines["Security Analysis Pipelines"]
@@ -45,7 +45,7 @@ flowchart TD
         end
 
         ScoringEngine["Severity & Confidence Scoring Engine"]
-        EvidenceCollector["Evidence Collector & Sanitizer"]
+        EvidenceCollector["Evidence Collector & Secret Redactor"]
     end
 
     subgraph TargetSystem["Target Web Application"]
@@ -90,38 +90,44 @@ flowchart TD
 ### 2.1 Scope & Authorization Guard (`ScopeGuard`)
 - **Responsibility:** Inviolable gatekeeper verifying target validity before any network operation occurs.
 - **Invariants Enforced:**
-  1. `site.status === 'VERIFIED'` and `site.expiresAt > Date.now()`.
-  2. Target URL scheme is strictly `http:` or `https:`.
-  3. FQDN matches verified `primaryDomain` or explicitly approved entries in `approvedSubdomains`.
-  4. URL path does not match any regex in `excludedPaths`.
-  5. Port is explicitly permitted (default: 80, 443, 8080, 8443).
+  1. `site.status === 'VERIFIED'`, `!site.scanBlocked`, and `site.expiresAt > Date.now()`.
+  2. If the site is in `GRACE_PERIOD`, `EXPIRED`, `SUSPENDED`, or `REVOKED`, scan dispatch is aborted immediately.
+  3. Target URL scheme is strictly `http:` or `https:`.
+  4. FQDN matches verified `primaryDomain` or explicitly approved entries in `approvedSubdomains`.
+  5. URL path does not match any regex in `excludedPaths`.
+  6. Port is explicitly permitted (default: 80, 443, 8080, 8443).
 
 ### 2.2 Hardened Safe HTTP Transport Layer (`SafeHttpClient`)
-- **Responsibility:** Executes all outbound network connections with comprehensive SSRF, DNS rebinding, and payload size protections.
+- **Responsibility:** Executes all outbound network connections with comprehensive SSRF, DNS rebinding, proxy isolation, and payload size protections.
 - **Core Architecture:**
   - Built upon custom Node.js `http.Agent` and `https.Agent` overrides.
-  - **Pre-Flight DNS Resolution & IP Validation:**
-    - Custom resolver queries configured system DNS.
-    - Evaluates all returned IPv4 and IPv6 addresses against strict denylists.
-    - Denylist covers:
+  - **Proxy Isolation Policy:** Outbound scanner traffic strictly ignores ambient `HTTP_PROXY` and `HTTPS_PROXY` environment variables by default. To prevent proxy-based SSRF bypass (where a corporate proxy performs DNS resolution and hits internal networks), scanner requests connect directly to target IP addresses.
+  - **Pre-Flight DNS Resolution & IP Normalization:**
+    - Resolves hostnames to all IPv4 and IPv6 addresses.
+    - Normalizes numeric representations (octal `0177.0.0.1`, hex `0x7f.0.0.1`, dword `2130706433`, zero-compressed `127.1`) to canonical dotted-quad or hex IPv6.
+    - Evaluates all returned addresses against strict denylists:
       - `127.0.0.0/8` (Loopback)
       - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC 1918 Private)
       - `169.254.0.0/16` (Link-Local & Cloud Metadata `169.254.169.254`)
       - `100.64.0.0/10` (Carrier-Grade NAT)
-      - `0.0.0.0/8` (Broadcast / Current Network)
-      - `::1/128` (IPv6 Loopback)
-      - `fe80::/10` (IPv6 Link-Local)
-      - `fc00::/7` (IPv6 Unique Local)
+      - `0.0.0.0/8`, `255.255.255.255/32` (Broadcast / Current Network)
+      - `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (TEST-NET)
+      - `::1/128` (IPv6 Loopback), `::/128` (Unspecified)
+      - `fe80::/10` (IPv6 Link-Local), `fc00::/7` (IPv6 Unique Local)
       - `::ffff:0:0/96` (IPv4-Mapped IPv6)
-      - `64:ff9b::/96` (IPv4/IPv6 Translation)
+      - `[fd00:ec2::254]` (AWS IMDSv6 Metadata)
   - **DNS Pinning at Socket Level (TOCTOU Elimination):**
-    - The `createConnection` hook intercepts the socket connection.
-    - Instead of letting the operating system re-resolve the hostname upon `connect()`, the pre-validated IP address is directly passed to `net.createConnection({ host: pinnedIp, port })`.
-    - For TLS connections, the original hostname is preserved strictly for SNI (Server Name Indication) and certificate hostname verification (`checkServerIdentity`).
+    - The `agent.createConnection(options, callback)` hook intercepts socket creation.
+    - Calls `net.createConnection({ host: pinnedIp, port: options.port })`.
+    - For TLS connections, wraps the connected socket using `tls.connect({ socket, servername: options.host, rejectUnauthorized: true })`.
+    - Guarantees:
+      1. Zero secondary DNS resolution occurs at connect time (defeats DNS rebinding).
+      2. TLS SNI (`servername: options.host`) is passed so virtual hosting functions correctly.
+      3. TLS certificate validation verifies that the presented certificate matches the requested hostname.
   - **Hop-by-Hop Redirect Validation:**
-    - Standard automated redirect following (`maxRedirects > 0`) is intercepted at every step.
-    - For any `301`, `302`, `303`, `307`, or `308` response, the `Location` header is parsed and resolved against the current URL.
-    - The redirect target is passed through the complete `ScopeGuard` and `SafeHttpClient` pre-flight validation before a subsequent connection is permitted.
+    - Automated redirects are disabled (`redirect: 'manual'` or `maxRedirects: 0`).
+    - For any `301`, `302`, `303`, `307`, or `308` response, `Location` header is parsed and resolved.
+    - Redirect target is validated through `ScopeGuard` and `SafeHttpClient` pre-flight checks before subsequent connection is permitted.
     - Maximum redirect depth is capped at 5.
   - **Stream Safeguards & Timeout Boundaries:**
     - Maximum response stream size: 10 MB (prevents memory exhaustion or decompression bombs).
@@ -198,27 +204,28 @@ flowchart TD
 ### 2.7 Evidence Aggregator & Provenance Signer (`EvidenceSigner`)
 - **Responsibility:** Constructs tamper-evident proof for every finding, integrating with Phase 7 `InternalEvidenceAuthority`.
 - **Evidence Lifecycle:**
-  1. Sanitizes request/response pair (strips passwords, Authorization headers, session cookies).
-  2. Truncates response body to maximum 64 KB.
-  3. Computes SHA-256 hash of raw target payload and raw response body.
-  4. Emits `EvidenceContext`:
+  1. Sanitizes request/response pair (strips passwords, Authorization headers, session cookies, API keys).
+  2. Generates sanitized reproduction curl command with credentials redacted.
+  3. Truncates response body to maximum 64 KB.
+  4. Computes SHA-256 hash of raw target payload and raw response body.
+  5. Obtains an authenticated `InternalTrustedEvidenceContext` by calling `InternalEvidenceAuthority.prototype.createContext()`:
      ```typescript
-     interface VulnerabilityEvidenceContext {
-       targetUrl: string;
-       method: string;
-       requestHeaders: Record<string, string>;
-       requestBodyPreview?: string;
-       responseStatus: number;
-       responseHeaders: Record<string, string>;
-       responseBodySnippet: string;
-       canaryPayload?: string;
-       reproductionCurl: string;
-       timestamp: string;
-       nonce: string;
-     }
+     const trustedContext = authority.createContext({
+       serviceAuthToken: process.env.VELTRIX_AUTH_CORE_SCANNER!,
+       verifierIdentity: 'core-scanner:active-audit',
+       provenance: 'TRUSTED_SERVER_COMPONENT',
+       eventId: findingId,
+       orgId: site.orgId,
+       siteId: site.siteId,
+       verifiedSignalIdentifiers: [signalIdentifier],
+       evidenceReferences: [reproductionCurlHash],
+       verifiedResponseEvidence: {
+         responseBody: sanitizedSnippet,
+         errorMessage: detectedSyntaxError,
+       },
+     });
      ```
-  5. Signs the evidence bundle using `InternalEvidenceAuthority.prototype.signEvidencePayload()`.
-  6. Stores cryptographic signature alongside finding record in DynamoDB.
+  6. Stores cryptographic signature and provenance context alongside finding record in DynamoDB table `Veltrix-VulnerabilityFindings`.
 
 ### 2.8 Scan Orchestration & Emergency Abort Engine (`ScanOrchestrator`)
 - **Responsibility:** Coordinates scan execution, enforces concurrency ceilings, and handles emergency stops.
@@ -226,7 +233,7 @@ flowchart TD
   - Per-target rate limiting: Token-bucket algorithm with configurable RPS (default 5, max 20).
   - Concurrency limits: 1 scan per website, 3 scans per organization.
 - **Emergency Abort Protocol (500 ms SLO):**
-  1. API receives `POST /api/v1/scans/:scanId/abort`.
+  1. API receives `POST /api/v1/scans/:scanId/abort` OR site verification is revoked via `POST /api/v1/websites/:siteId/revoke`.
   2. Updates scan job record in DynamoDB with `status = 'ABORT_REQUESTED'`.
   3. Abort coordinator signals the active worker's `AbortController`.
   4. Active HTTP client immediately destroys all pending and active sockets (`socket.destroy()`).
@@ -241,7 +248,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Admin as Security Admin
+    actor Admin as ORG_ADMIN / SUPER_ADMIN
     participant API as Scan API
     participant Guard as Scope & Auth Guard
     participant DB as DynamoDB / MemoryStore
@@ -254,7 +261,7 @@ sequenceDiagram
     Admin->>API: POST /api/v1/scans (siteId, profile, scope)
     API->>Guard: Validate site ownership & authorization
     Guard->>DB: Query site verification record
-    DB-->>Guard: Status=VERIFIED, expiresAt > now
+    DB-->>Guard: Status=VERIFIED, scanBlocked=false, expiresAt > now
     Guard-->>API: Authorization Valid
     API->>DB: Create ScanJob (status=QUEUED)
     API-->>Admin: 202 Accepted (scanId)
@@ -265,7 +272,7 @@ sequenceDiagram
 
     loop Crawl & Assessment Phase
         Worker->>Transport: Request URL (GET /path)
-        Transport->>Transport: DNS Pre-flight & Pinning (SSRF Check)
+        Transport->>Transport: DNS Pre-flight & Pinning (SSRF Check, Proxy Bypass)
         Transport->>Target: TCP Connect to Pinned Public IP
         Target-->>Transport: HTTP Response (Status, Headers, Body)
         Transport->>Transport: Validate Stream (<10MB) & Check Redirects
@@ -276,8 +283,9 @@ sequenceDiagram
 
         opt Finding Discovered
             Worker->>Worker: Compute CVSS & Confidence Tier
-            Worker->>Auth: Sign EvidenceContext (HMAC-SHA256)
-            Auth-->>Worker: Cryptographic Signature
+            Worker->>Worker: Redact Secrets from Headers & Reproduction Curl
+            Worker->>Auth: createContext(serviceAuthToken, 'core-scanner:active-audit')
+            Auth-->>Worker: Signed InternalTrustedEvidenceContext
             Worker->>DB: Save Finding (Veltrix-VulnerabilityFindings)
         end
     end
@@ -293,7 +301,7 @@ sequenceDiagram
 | Component | Integration Touchpoint | Technical Mechanism |
 | :--- | :--- | :--- |
 | **`StorageInterface`** | Data persistence for assets, scans, findings | Implemented across both `DynamoDBStore` (AWS) and `MemoryStore` (isolated tests). |
-| **`InternalEvidenceAuthority`** | Evidence authenticity & non-repudiation | Generates HMAC-SHA256 signatures for every finding's `EvidenceContext`. |
-| **`AuditLog`** | Tamper-evident compliance tracking | Emits structured audit events for registration, verification, scan start, abort, and completion. |
+| **`InternalEvidenceAuthority`** | Evidence authenticity & non-repudiation | Issues HMAC-SHA256 signatures for findings using approved verifier `'core-scanner:active-audit'` and credential `VELTRIX_AUTH_CORE_SCANNER`. |
+| **`AuditLog`** | Tamper-evident compliance tracking | Emits structured audit events for `WEBSITE_REGISTERED`, `WEBSITE_VERIFIED`, `WEBSITE_REVOKED`, `SCAN_STARTED`, `SCAN_ABORTED`, and `SCAN_COMPLETED`. |
 | **`EventService` / Detections** | Real-time correlation with live attacks | Vulnerability findings correlated with real-time detection telemetry via `siteId` and endpoint path. |
-| **`jwtService`** | Authentication & RBAC | Enforces JWT token validation and role checks (`SECURITY_ADMIN`, `SECURITY_ANALYST`, `SECURITY_VIEWER`). |
+| **`jwtService` / `requireRole`** | Authentication & RBAC | Enforces canonical production roles: `SUPER_ADMIN`, `ORG_ADMIN`, `SECURITY_ANALYST`, `READ_ONLY_VIEWER`, and `AUDITOR`. |
