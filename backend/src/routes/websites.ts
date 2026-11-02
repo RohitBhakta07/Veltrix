@@ -89,6 +89,7 @@ export function createWebsitesRouter(options?: {
         tokenCreatedAt: nowIso,
         dnsTxtRecord: challenge.dnsTxtRecord,
         httpChallenge: challenge.httpChallenge,
+        metaTag: challenge.metaTag,
         scanBlocked: true, // Unverified domains are strictly blocked from scanning
         health: {
           telemetryStatus: 'INACTIVE',
@@ -262,7 +263,7 @@ export function createWebsitesRouter(options?: {
           success: false,
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Invalid verification method. Must be DNS_TXT or HTTP_CHALLENGE.',
+            message: 'Invalid verification method. Must be DNS_TXT, HTTP_CHALLENGE, or META_TAG.',
             details: parseResult.error.errors,
           },
         });
@@ -282,7 +283,8 @@ export function createWebsitesRouter(options?: {
       }
 
       if (!result.verified) {
-        return res.status(400).json({
+        const statusCode = result.error?.code === 'WEBSITE_NOT_FOUND' ? 404 : 400;
+        return res.status(statusCode).json({
           success: false,
           error: result.error,
         });
@@ -329,6 +331,45 @@ export function createWebsitesRouter(options?: {
         success: true,
         site: updated,
         message: `Website '${siteId}' verification revoked. Asset placed in GRACE_PERIOD with immediate scan freeze.`,
+      });
+    }
+  );
+
+  // 6.1 Check Scan Authorization (GET /api/v1/websites/:siteId/scan-authorization)
+  router.get(
+    '/:siteId/scan-authorization',
+    requireRole('SUPER_ADMIN', 'ORG_ADMIN', 'SECURITY_ANALYST', 'READ_ONLY_VIEWER', 'AUDITOR'),
+    async (req: Request, res: Response) => {
+      const orgId = req.tenantOrgId!;
+      const siteId = req.params.siteId as string;
+
+      const site = await storage.getWebsiteById(orgId, siteId);
+      if (!site) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'WEBSITE_NOT_FOUND',
+            message: `Website '${siteId}' not found in organization '${orgId}'.`,
+          },
+        });
+      }
+
+      // Check and enforce automatic expiration if applicable
+      await verifier.checkAndEnforceExpiry(orgId, siteId);
+      const refreshedSite = (await storage.getWebsiteById(orgId, siteId)) || site;
+
+      const authCheck = DomainVerificationService.isScanAuthorized(refreshedSite);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          siteId,
+          primaryDomain: refreshedSite.primaryDomain,
+          status: refreshedSite.status,
+          scanBlocked: refreshedSite.scanBlocked,
+          expiresAt: refreshedSite.expiresAt,
+          ...authCheck,
+        },
       });
     }
   );

@@ -443,6 +443,12 @@ export interface WebsiteAsset {
       orgId: string;
     };
   };
+  metaTag?: {
+    tag: string;
+    name: string;
+    content: string;
+  };
+  verifiedMethod?: VerificationMethod;
   verifiedAt?: string;
   expiresAt?: string;
   gracePeriodEndsAt?: string;
