@@ -58,17 +58,30 @@ export class VerificationScopeGuard {
     }
     const isHttps = url.protocol === 'https:';
 
-    // 3. Validate Port
-    const defaultPort = isHttps ? 443 : 80;
-    const port = url.port ? parseInt(url.port, 10) : defaultPort;
-    if (isNaN(port) || (port !== 80 && port !== 443)) {
+    // 3. Strict Identity Validation
+    if (
+      typeof context.primaryDomain !== 'string' ||
+      context.primaryDomain.trim().length === 0 ||
+      typeof context.activeToken !== 'string' ||
+      context.activeToken.trim().length === 0
+    ) {
       throw new SafeTransportError(
-        'PORT_NOT_PERMITTED',
-        `Port ${port} is prohibited for domain verification. Only standard ports 80 and 443 are allowed.`
+        'DOMAIN_NOT_VERIFIED',
+        'Verification rejected: Missing, empty, or whitespace-only verification challenge identity fields.'
       );
     }
 
-    // 4. Strict Host Matching (Case-insensitive primary domain only; subdomains barred)
+    // 4. Protocol-Specific Standard Port Policy (Issue 5)
+    const expectedPort = isHttps ? 443 : 80;
+    const port = url.port ? parseInt(url.port, 10) : expectedPort;
+    if (isNaN(port) || port !== expectedPort) {
+      throw new SafeTransportError(
+        'PORT_NOT_PERMITTED',
+        `Port ${port} is prohibited for domain verification with protocol '${url.protocol}'. Only standard port ${expectedPort} is allowed.`
+      );
+    }
+
+    // 5. Strict Host Matching (Case-insensitive primary domain only; subdomains barred)
     const reqHost = url.hostname.toLowerCase();
     const allowedPrimary = context.primaryDomain.toLowerCase();
     if (reqHost !== allowedPrimary) {
@@ -78,7 +91,7 @@ export class VerificationScopeGuard {
       );
     }
 
-    // 5. Strict Permitted Path Whitelist & Anti-Traversal
+    // 6. Strict Permitted Path Whitelist & Anti-Traversal
     const allowedHttpChallengePath = `/.well-known/veltrix-challenge/${context.activeToken}`;
     const rawPath = url.pathname;
 
@@ -125,7 +138,30 @@ export class AuthorizedScanScopeGuard {
     context: AuthorizedScanScopeContext,
     options?: { maxRedirects?: number }
   ): ScopeValidationResult {
-    // 1. Inviolable Ownership & State Invariants
+    // 1. Authoritative Identity Validation
+    if (
+      typeof context.orgId !== 'string' || context.orgId.trim().length === 0 ||
+      typeof context.scanId !== 'string' || context.scanId.trim().length === 0 ||
+      typeof context.siteId !== 'string' || context.siteId.trim().length === 0 ||
+      typeof context.primaryDomain !== 'string' || context.primaryDomain.trim().length === 0
+    ) {
+      throw new SafeTransportError(
+        'DOMAIN_NOT_VERIFIED',
+        'Scan rejected: Missing, empty, or whitespace-only authoritative identity fields.'
+      );
+    }
+
+    if (
+      !Array.isArray(context.approvedSubdomains) ||
+      context.approvedSubdomains.some((s) => typeof s !== 'string' || s.trim().length === 0)
+    ) {
+      throw new SafeTransportError(
+        'DOMAIN_NOT_VERIFIED',
+        'Scan rejected: Malformed or invalid approved subdomains specification.'
+      );
+    }
+
+    // 2. Inviolable Ownership & State Invariants
     if (context.status === 'GRACE_PERIOD' || context.status === 'SUSPENDED') {
       throw new SafeTransportError(
         'DOMAIN_VERIFICATION_SUSPENDED',
@@ -140,21 +176,25 @@ export class AuthorizedScanScopeGuard {
       );
     }
 
-    if (context.scanBlocked) {
+    if (context.scanBlocked !== false) {
       throw new SafeTransportError(
         'DOMAIN_VERIFICATION_SUSPENDED',
-        'Scan rejected: Target domain has scanBlocked set to true.'
+        'Scan rejected: Target domain has scanBlocked set to true or undefined.'
       );
     }
 
-    if (context.expiresAt <= Date.now()) {
+    if (
+      typeof context.expiresAt !== 'number' ||
+      !Number.isFinite(context.expiresAt) ||
+      context.expiresAt <= Date.now()
+    ) {
       throw new SafeTransportError(
         'DOMAIN_NOT_VERIFIED',
-        `Scan rejected: Domain ownership verification expired at ${new Date(context.expiresAt).toISOString()}.`
+        `Scan rejected: Domain ownership verification expired or timestamp is invalid (${context.expiresAt}).`
       );
     }
 
-    // 2. Validate Scheme
+    // 3. Validate Scheme
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new SafeTransportError(
         'SSRF_BLOCKED',
@@ -163,7 +203,7 @@ export class AuthorizedScanScopeGuard {
     }
     const isHttps = url.protocol === 'https:';
 
-    // 3. Port Policy & Inviolable Safety Precedence
+    // 4. Port Policy & Inviolable Safety Precedence
     const defaultPort = isHttps ? 443 : 80;
     const port = url.port ? parseInt(url.port, 10) : defaultPort;
     if (isNaN(port) || port < 1 || port > 65535) {
@@ -178,17 +218,17 @@ export class AuthorizedScanScopeGuard {
       );
     }
 
-    // Default ports 80/443; non-standard ports require explicit authorization
-    const isStandardPort = port === 80 || port === 443;
+    // Protocol-Specific Standard Port Acceptance (Issue 5)
+    const isStandardPort = (isHttps && port === 443) || (!isHttps && port === 80);
     const isWhitelistedPort = context.allowedPorts && context.allowedPorts.includes(port);
     if (!isStandardPort && !isWhitelistedPort) {
       throw new SafeTransportError(
         'PORT_NOT_PERMITTED',
-        `Port ${port} is non-standard and has not been explicitly authorized for this target asset.`
+        `Port ${port} is non-standard and has not been explicitly authorized for protocol '${url.protocol}'.`
       );
     }
 
-    // 4. Exact Approved Host Matching (No wildcards permitted)
+    // 5. Exact Approved Host Matching (No wildcards permitted)
     const reqHost = url.hostname.toLowerCase();
     const primaryDomain = context.primaryDomain.toLowerCase();
     const approvedSubdomains = (context.approvedSubdomains || []).map((s) => s.toLowerCase());
@@ -203,7 +243,7 @@ export class AuthorizedScanScopeGuard {
       );
     }
 
-    // 5. Excluded Paths Policy
+    // 6. Excluded Paths Policy
     const rawPath = url.pathname;
     let decodedPath = rawPath;
     try {
@@ -232,7 +272,7 @@ export class AuthorizedScanScopeGuard {
       }
     }
 
-    // 6. HTTP Method Policy
+    // 7. HTTP Method Policy
     const upperMethod = method.toUpperCase();
     const allowedMethods = context.allowedMethods || ['GET', 'HEAD'];
     if (!allowedMethods.includes(upperMethod)) {
@@ -242,7 +282,7 @@ export class AuthorizedScanScopeGuard {
       );
     }
 
-    // 7. Redirect Ceiling: Max 5 hops for authorized scanning
+    // 8. Redirect Ceiling: Max 5 hops for authorized scanning
     const requestedRedirects = options?.maxRedirects ?? 0;
     const maxRedirects = Math.min(5, Math.max(0, requestedRedirects));
 

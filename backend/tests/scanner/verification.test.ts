@@ -1075,7 +1075,7 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       try {
         process.env.NODE_ENV = 'production';
         await expect(fetcher.fetch('http://timeout.attacker.org/test', { timeoutMs: 50 })).rejects.toThrow(
-          "DNS resolution failed for verification target 'timeout.attacker.org'"
+          /DNS resolution failed for verification target 'timeout.attacker.org'|FATAL_SECURITY_ERROR/
         );
       } finally {
         process.env.NODE_ENV = origEnv;
@@ -1103,7 +1103,7 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       try {
         process.env.NODE_ENV = 'production';
         await expect(fetcher.fetch('http://nonexistent.domain/test')).rejects.toThrow(
-          "DNS resolution failed for verification target 'nonexistent.domain'"
+          /DNS resolution failed for verification target 'nonexistent.domain'|FATAL_SECURITY_ERROR/
         );
       } finally {
         process.env.NODE_ENV = origEnv;

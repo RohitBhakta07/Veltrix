@@ -9,10 +9,12 @@ import { SafeHttpClient } from './safe-http-client.js';
 import type { HttpResponse, HttpFetcherInterface } from '../verification/http-verifier.js';
 import {
   type VerificationScopeContext,
-  createVerificationScopeContext,
-  isTrustedScopeContext,
   SafeTransportError,
 } from './types.js';
+import {
+  createInternalVerificationContext,
+  isTrustedScopeContext,
+} from './context-authority.js';
 
 export interface SafeVerificationFetcherOptions {
   client?: SafeHttpClient;
@@ -81,7 +83,7 @@ export class SafeVerificationHttpFetcher implements HttpFetcherInterface {
         );
       }
 
-      context = createVerificationScopeContext({
+      context = createInternalVerificationContext({
         primaryDomain,
         activeToken,
         orgId,

@@ -6,8 +6,8 @@ import {
   ActiveSocketRegistry,
   SafeHttpClient,
   DnsResolver,
-  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
+import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
 
 describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (TASK-802)', () => {
   let longPollingServer: http.Server;

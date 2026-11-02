@@ -96,6 +96,15 @@ export interface DefaultHttpFetcherOptions {
   allowLoopbackForTesting?: boolean;
 }
 
+/**
+ * Legacy test adapter — strictly prohibited in production.
+ *
+ * Preserved for backward-compatible TASK-801 regression testing where tests directly
+ * inspect DefaultSocketConnector.prototype.connect parameters and custom AddressResolverInterface.
+ * In production (NODE_ENV === 'production'), this class unconditionally throws FATAL_SECURITY_ERROR.
+ * All production domain ownership verification is authoritatively routed through SafeVerificationHttpFetcher
+ * backed by SafeHttpClient.
+ */
 export class DefaultHttpFetcher implements HttpFetcherInterface {
   private readonly addressResolver: AddressResolverInterface;
   private readonly socketConnector: SocketConnectorInterface;
@@ -103,8 +112,13 @@ export class DefaultHttpFetcher implements HttpFetcherInterface {
   private readonly allowLoopbackForTesting: boolean;
 
   constructor(options?: DefaultHttpFetcherOptions) {
-    if (process.env.NODE_ENV === 'production' && (options?.socketConnector || options?.allowLoopbackForTesting)) {
-      throw new Error('FATAL_SECURITY_ERROR: Custom socket connectors and test loopback options are prohibited in production.');
+    if (process.env.NODE_ENV === 'production') {
+      if (options?.socketConnector || options?.allowLoopbackForTesting) {
+        throw new Error('FATAL_SECURITY_ERROR: Custom socket connectors and test loopback options are prohibited in production.');
+      }
+      throw new Error(
+        'FATAL_SECURITY_ERROR: DefaultHttpFetcher is a legacy test adapter and is strictly prohibited in production. All verification must use SafeVerificationHttpFetcher.'
+      );
     }
 
     this.addressResolver = options?.addressResolver || new DefaultAddressResolver();
@@ -117,6 +131,12 @@ export class DefaultHttpFetcher implements HttpFetcherInterface {
     url: string,
     options?: { timeoutMs?: number; signal?: AbortSignal }
   ): Promise<HttpResponse> {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FATAL_SECURITY_ERROR: DefaultHttpFetcher is strictly prohibited in production. All verification must use SafeVerificationHttpFetcher.'
+      );
+    }
+
     const timeout = options?.timeoutMs || 5000;
 
     // 1. Strict protocol allowlist

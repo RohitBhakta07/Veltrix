@@ -5,17 +5,75 @@ import {
   SafeHttpClient,
   DnsResolver,
   SafeTransportError,
+  ActiveSocketRegistry,
+} from '../../src/scanner/transport/index.js';
+import {
   createAuthorizedScanScopeContext,
   createVerificationScopeContext,
-} from '../../src/scanner/transport/index.js';
+} from '../../src/scanner/transport/context-authority.js';
 
 describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
   let redirectServer: http.Server;
   let serverPort: number;
+  const openServerSockets = new Set<net.Socket>();
 
   beforeAll(async () => {
     redirectServer = http.createServer((req, res) => {
       const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+      // Large body redirect endpoint (>64 KB)
+      if (url.pathname === '/redirect-large-body') {
+        res.writeHead(302, {
+          Location: `http://primary.example.com:${serverPort}/final`,
+          'Content-Type': 'text/plain',
+        });
+        const largeData = Buffer.alloc(128 * 1024, 'X');
+        res.end(largeData);
+        return;
+      }
+
+      // Stalled redirect endpoint (does not end body)
+      if (url.pathname === '/redirect-stalled-body') {
+        res.writeHead(302, {
+          Location: `http://primary.example.com:${serverPort}/final`,
+          'Content-Type': 'text/plain',
+        });
+        res.write('stalled-start');
+        return;
+      }
+
+      // Trickled redirect endpoint
+      if (url.pathname === '/redirect-trickled-body') {
+        res.writeHead(302, {
+          Location: `http://primary.example.com:${serverPort}/final`,
+          'Content-Type': 'text/plain',
+        });
+        res.write('chunk-1');
+        const timer = setInterval(() => {
+          if (!res.writableEnded && !res.destroyed) {
+            try {
+              res.write('-trickle');
+            } catch {
+              clearInterval(timer);
+            }
+          } else {
+            clearInterval(timer);
+          }
+        }, 80);
+        return;
+      }
+
+      // 5-hop redirect chain
+      if (url.pathname.startsWith('/multi-hop-')) {
+        const step = parseInt(url.pathname.replace('/multi-hop-', ''), 10);
+        const nextTarget =
+          step < 5
+            ? `http://primary.example.com:${serverPort}/multi-hop-${step + 1}`
+            : `http://primary.example.com:${serverPort}/final`;
+        res.writeHead(302, { Location: nextTarget });
+        res.end();
+        return;
+      }
 
       if (url.pathname === '/redirect-1') {
         res.writeHead(302, { Location: `http://primary.example.com:${serverPort}/redirect-2` });
@@ -100,6 +158,11 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       res.end('ok');
     });
 
+    redirectServer.on('connection', (socket) => {
+      openServerSockets.add(socket);
+      socket.on('close', () => openServerSockets.delete(socket));
+    });
+
     await new Promise<void>((resolve) => {
       redirectServer.listen(0, '127.0.0.1', () => {
         const addr = redirectServer.address() as net.AddressInfo;
@@ -110,6 +173,11 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
   });
 
   afterAll(async () => {
+    for (const socket of openServerSockets) {
+      try {
+        socket.destroy();
+      } catch {}
+    }
     await new Promise<void>((resolve) => redirectServer.close(() => resolve()));
   });
 
@@ -301,5 +369,121 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
 
     expect(res.status).toBe(200);
     expect(res.data).toEqual({ ok: true, path: '/final' });
+  });
+
+  it('drains up to 64 KB of redirect body, destroys socket, and follows redirect when body exceeds 64 KB', async () => {
+    const client = createTestClient();
+    const res = await client.get(`http://primary.example.com:${serverPort}/redirect-large-body`, {
+      maxRedirects: 2,
+      allowLoopbackForTesting: true,
+      context: getAuthorizedContext(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.redirectHops).toBe(1);
+    expect(res.data).toEqual({ ok: true, path: '/final' });
+  });
+
+  it('terminates and destroys socket when redirect response body stalls indefinitely', async () => {
+    const registry = new ActiveSocketRegistry();
+    const client = new SafeHttpClient({
+      dnsResolver: new DnsResolver({
+        lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+        allowLoopbackForTesting: true,
+      }),
+      socketRegistry: registry,
+      allowLoopbackForTesting: true,
+    });
+
+    await expect(
+      client.get(`http://primary.example.com:${serverPort}/redirect-stalled-body`, {
+        maxRedirects: 2,
+        allowLoopbackForTesting: true,
+        bodyIdleTimeoutMs: 150,
+        timeoutMs: 300,
+        context: getAuthorizedContext(),
+      })
+    ).rejects.toThrow(/timed out/i);
+
+    expect(registry.getActiveCount()).toBe(0);
+  });
+
+  it('terminates and destroys socket when redirect response body trickles slowly past bounded timeout', async () => {
+    const registry = new ActiveSocketRegistry();
+    const client = new SafeHttpClient({
+      dnsResolver: new DnsResolver({
+        lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+        allowLoopbackForTesting: true,
+      }),
+      socketRegistry: registry,
+      allowLoopbackForTesting: true,
+    });
+
+    await expect(
+      client.get(`http://primary.example.com:${serverPort}/redirect-trickled-body`, {
+        maxRedirects: 2,
+        allowLoopbackForTesting: true,
+        bodyIdleTimeoutMs: 100,
+        timeoutMs: 250,
+        context: getAuthorizedContext(),
+      })
+    ).rejects.toThrow(/timed out/i);
+
+    expect(registry.getActiveCount()).toBe(0);
+  });
+
+  it('immediately terminates and destroys socket when AbortSignal fires during redirect drain', async () => {
+    const registry = new ActiveSocketRegistry();
+    const client = new SafeHttpClient({
+      dnsResolver: new DnsResolver({
+        lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+        allowLoopbackForTesting: true,
+      }),
+      socketRegistry: registry,
+      allowLoopbackForTesting: true,
+    });
+
+    const controller = new AbortController();
+    setTimeout(() => {
+      controller.abort();
+    }, 50);
+
+    await expect(
+      client.get(`http://primary.example.com:${serverPort}/redirect-stalled-body`, {
+        maxRedirects: 2,
+        allowLoopbackForTesting: true,
+        signal: controller.signal,
+        timeoutMs: 5000,
+        context: getAuthorizedContext(),
+      })
+    ).rejects.toThrow(/cancelled by caller AbortSignal/i);
+
+    expect(registry.getActiveCount()).toBe(0);
+  });
+
+  it('prevents socket leaks across a 5-hop redirect chain, keeping active sockets bounded to <= 1', async () => {
+    const registry = new ActiveSocketRegistry();
+    const client = new SafeHttpClient({
+      dnsResolver: new DnsResolver({
+        lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+        allowLoopbackForTesting: true,
+      }),
+      socketRegistry: registry,
+      allowLoopbackForTesting: true,
+    });
+
+    const res = await client.get(`http://primary.example.com:${serverPort}/multi-hop-1`, {
+      maxRedirects: 5,
+      allowLoopbackForTesting: true,
+      context: getAuthorizedContext(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.redirectHops).toBe(5);
+    expect(res.data).toEqual({ ok: true, path: '/final' });
+
+    // Inviolable guarantee: all intermediary hop sockets were cleanly unregistered and destroyed
+    expect(registry.getActiveCount('org-enterprise-01', 'scan-001')).toBe(0);
+    expect(registry.getActiveCount()).toBe(0);
   });
 });

@@ -5,7 +5,7 @@ import { DnsVerifier, type DnsResolverInterface, DefaultDnsResolver } from './dn
 import { HttpVerifier, type HttpFetcherInterface, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
 import { MetaVerifier } from './meta-verifier.js';
 import { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
-import { createVerificationScopeContext } from '../transport/types.js';
+import { createAuthoritativeVerificationScopeContext } from '../transport/context-authority.js';
 
 export { isProhibitedIp, isProhibitedIpv4 };
 
@@ -253,24 +253,14 @@ export class DomainOwnershipVerifier {
       const expectedUrl = site.httpChallenge.url;
       const expectedToken = site.httpChallenge.expectedBody.veltrixChallengeToken;
       const expectedOrgId = site.httpChallenge.expectedBody.orgId;
-      const verificationContext = createVerificationScopeContext({
-        primaryDomain: site.primaryDomain,
-        activeToken: expectedToken,
-        orgId,
-        siteId,
-      });
+      const verificationContext = createAuthoritativeVerificationScopeContext(site);
       const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     } else if (method === 'META_TAG') {
       const targetUrl = `https://${site.primaryDomain.toLowerCase().trim()}/`;
       const expectedToken = site.verificationToken;
-      const verificationContext = createVerificationScopeContext({
-        primaryDomain: site.primaryDomain,
-        activeToken: expectedToken,
-        orgId,
-        siteId,
-      });
+      const verificationContext = createAuthoritativeVerificationScopeContext(site);
       const res = await this.metaVerifier.verify(targetUrl, expectedToken, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';

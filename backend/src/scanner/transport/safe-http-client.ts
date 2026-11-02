@@ -533,7 +533,32 @@ export class SafeHttpClient {
         const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
 
         if (isRedirect && (options.maxRedirects ?? 0) > 0) {
-          // If following redirect, resolve hop without consuming body
+          // Bounded redirect response drain & socket teardown
+          const redirectDrainTimeout = Math.min(
+            options.bodyIdleTimeoutMs ?? 1000,
+            options.timeoutMs ?? 1000,
+            remainingTimeoutMs,
+            1000
+          );
+          try {
+            // Prevent teardown/reset events on old socket from triggering safeReject on req
+            req.removeAllListeners('error');
+            req.on('error', () => {});
+            if (activeSocket) {
+              activeSocket.removeAllListeners('error');
+              activeSocket.on('error', () => {});
+            }
+
+            await this.drainAndDestroyRedirectResponse(res, activeSocket, {
+              maxDrainBytes: 64 * 1024,
+              timeoutMs: redirectDrainTimeout,
+              signal,
+            });
+          } catch (drainErr) {
+            safeReject(drainErr as Error);
+            return;
+          }
+
           if (settled) return;
           settled = true;
           cleanup();
@@ -614,6 +639,95 @@ export class SafeHttpClient {
         req.write(body);
       }
       req.end();
+    });
+  }
+
+  private async drainAndDestroyRedirectResponse(
+    res: http.IncomingMessage,
+    socket: net.Socket | null,
+    options: {
+      maxDrainBytes: number;
+      timeoutMs: number;
+      signal: AbortSignal;
+    }
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let bytesDrained = 0;
+      let timer: NodeJS.Timeout | null = null;
+      let finished = false;
+
+      const finish = (err?: Error) => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        options.signal.removeEventListener('abort', onAbort);
+        res.removeListener('data', onData);
+        res.removeListener('end', onEnd);
+        res.removeListener('error', onError);
+
+        // Explicitly destroy incoming stream and underlying socket
+        try {
+          res.destroy();
+        } catch {}
+        if (socket) {
+          try {
+            socket.destroy();
+          } catch {}
+        }
+
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      };
+
+      const onAbort = () => {
+        finish(new SafeTransportError('ABORTED', 'Request was cancelled by caller AbortSignal.'));
+      };
+
+      if (options.signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      options.signal.addEventListener('abort', onAbort, { once: true });
+
+      timer = setTimeout(() => {
+        finish(
+          new SafeTransportError(
+            'BODY_IDLE_TIMEOUT',
+            'Redirect response body transmission timed out.'
+          )
+        );
+      }, options.timeoutMs);
+      timer.unref?.();
+
+      const onData = (chunk: Buffer) => {
+        bytesDrained += chunk.length;
+        if (bytesDrained > options.maxDrainBytes) {
+          // Exceeded bounded redirect wire limit -> terminate immediately and safely
+          finish();
+        }
+      };
+
+      const onEnd = () => {
+        finish();
+      };
+
+      const onError = () => {
+        finish();
+      };
+
+      res.on('data', onData);
+      res.on('end', onEnd);
+      res.on('error', onError);
+
+      if (res.complete || res.readableEnded) {
+        finish();
+      } else {
+        res.resume();
+      }
     });
   }
 }

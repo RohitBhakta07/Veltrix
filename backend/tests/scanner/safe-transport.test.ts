@@ -12,10 +12,19 @@ import {
   isProhibitedIp,
   BLOCKED_INTERNAL_PORTS,
   type RequestAuthorizationContext,
-  createAuthorizedScanScopeContext,
-  createVerificationScopeContext,
   SafeVerificationHttpFetcher,
 } from '../../src/scanner/transport/index.js';
+import {
+  createAuthorizedScanScopeContext,
+  createVerificationScopeContext,
+  createAuthoritativeScanScopeContext,
+  createAuthoritativeVerificationScopeContext,
+  createInternalScanContext,
+  createInternalVerificationContext,
+  isTrustedScopeContext,
+} from '../../src/scanner/transport/context-authority.js';
+import { DefaultHttpFetcher } from '../../src/scanner/verification/http-verifier.js';
+import type { WebsiteAsset } from '@veltrix/shared';
 
 describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
   let localHttpServer: http.Server;
@@ -971,6 +980,434 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         }
         await new Promise<void>((r) => hungTlsServer.close(() => r()));
       }
+    });
+  });
+
+  describe('8. TASK-802 Final Security Hardening & Strict Invariant Matrix', () => {
+    const validAsset: WebsiteAsset = {
+      siteId: 'site-alpha-123',
+      orgId: 'org-alpha-123',
+      name: 'Alpha Target',
+      primaryDomain: 'primary.example.com',
+      approvedSubdomains: ['api.example.com', 'admin.example.com'],
+      environment: 'PRODUCTION',
+      status: 'VERIFIED',
+      riskTier: 'CRITICAL',
+      tags: ['production'],
+      verificationToken: 'vltx_tok_0123456789abcdef0123456789abcdef',
+      tokenCreatedAt: new Date().toISOString(),
+      dnsTxtRecord: {
+        host: '_veltrix-challenge.primary.example.com',
+        value: 'vltx_tok_0123456789abcdef0123456789abcdef',
+      },
+      httpChallenge: {
+        url: 'http://primary.example.com/.well-known/veltrix-challenge/vltx_tok_0123456789abcdef0123456789abcdef',
+        expectedBody: {
+          veltrixChallengeToken: 'vltx_tok_0123456789abcdef0123456789abcdef',
+          orgId: 'org-alpha-123',
+        },
+      },
+      verifiedAt: new Date(Date.now() - 3600000).toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      scanBlocked: false,
+      health: 'HEALTHY',
+      createdAt: new Date(Date.now() - 86400000).toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const validScanDesc = {
+      scanId: 'scan-alpha-999',
+      allowedPorts: [localHttpPort],
+      allowedMethods: ['GET', 'POST'],
+    };
+
+    it('proves isTrustedScopeContext accepts only authoritatively minted contexts via private registry', () => {
+      const authScan = createAuthoritativeScanScopeContext(validAsset, validScanDesc);
+      const authVerif = createAuthoritativeVerificationScopeContext(validAsset);
+      const internalScan = createInternalScanContext({
+        orgId: 'org-1',
+        scanId: 'scan-1',
+        siteId: 'site-1',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 60000,
+      });
+      const internalVerif = createInternalVerificationContext({
+        primaryDomain: 'example.com',
+        activeToken: 'tok-123',
+      });
+
+      expect(isTrustedScopeContext(authScan)).toBe(true);
+      expect(isTrustedScopeContext(authVerif)).toBe(true);
+      expect(isTrustedScopeContext(internalScan)).toBe(true);
+      expect(isTrustedScopeContext(internalVerif)).toBe(true);
+
+      // Rejection of forged objects and Symbol spoofing
+      expect(isTrustedScopeContext(null)).toBe(false);
+      expect(isTrustedScopeContext(undefined)).toBe(false);
+      expect(isTrustedScopeContext({})).toBe(false);
+      expect(isTrustedScopeContext({ ...authScan })).toBe(false); // cloned object loses WeakSet identity
+      expect(isTrustedScopeContext({ [Symbol.for('TRUSTED_SCOPE_BRAND')]: true })).toBe(false);
+      expect(isTrustedScopeContext(JSON.parse(JSON.stringify(authScan)))).toBe(false);
+    });
+
+    it('rejects unbranded plain JSON contexts in SafeHttpClient before DNS resolution', async () => {
+      let dnsResolved = false;
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => {
+            dnsResolved = true;
+            return [{ address: '127.0.0.1', family: 4 }];
+          },
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      // 1. Unbranded Scan context
+      const forgedScanContext = {
+        purpose: 'AUTHORIZED_SCAN',
+        orgId: 'org-fake',
+        scanId: 'scan-fake',
+        siteId: 'site-fake',
+        primaryDomain: 'primary.example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      } as any;
+
+      await expect(
+        client.get(`http://primary.example.com:${localHttpPort}/test`, {
+          context: forgedScanContext,
+          allowLoopbackForTesting: true,
+        })
+      ).rejects.toThrow(/Untrusted or forged request authorization context rejected/i);
+
+      expect(dnsResolved).toBe(false);
+
+      // 2. Unbranded Verification context
+      const forgedVerifContext = {
+        purpose: 'DOMAIN_OWNERSHIP_VERIFICATION',
+        primaryDomain: 'primary.example.com',
+        activeToken: 'vltx_fake_token_123',
+      } as any;
+
+      await expect(
+        client.get(`http://primary.example.com:${localHttpPort}/test`, {
+          context: forgedVerifContext,
+          allowLoopbackForTesting: true,
+        })
+      ).rejects.toThrow(/Untrusted or forged request authorization context rejected/i);
+
+      expect(dnsResolved).toBe(false);
+    });
+
+    it('createAuthoritativeScanScopeContext enforces server-side verification status invariants', () => {
+      // Pending
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, status: 'PENDING_VERIFICATION' },
+          validScanDesc
+        )
+      ).toThrow(/has not completed ownership verification/i);
+
+      // Grace period
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, status: 'GRACE_PERIOD' },
+          validScanDesc
+        )
+      ).toThrow(/Active scans are suspended/i);
+
+      // Suspended
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, status: 'SUSPENDED' },
+          validScanDesc
+        )
+      ).toThrow(/Active scans are suspended/i);
+
+      // Expired
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, status: 'EXPIRED' },
+          validScanDesc
+        )
+      ).toThrow(/has not completed ownership verification/i);
+
+      // Revoked
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, status: 'REVOKED' },
+          validScanDesc
+        )
+      ).toThrow(/has not completed ownership verification/i);
+    });
+
+    it('createAuthoritativeScanScopeContext enforces scanBlocked invariant', () => {
+      // scanBlocked === true
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, scanBlocked: true },
+          validScanDesc
+        )
+      ).toThrow(/scanBlocked set to true or undefined/i);
+
+      // scanBlocked === undefined
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, scanBlocked: undefined as any },
+          validScanDesc
+        )
+      ).toThrow(/scanBlocked set to true or undefined/i);
+    });
+
+    it('createAuthoritativeScanScopeContext enforces finite future expiresAt invariant', () => {
+      // Missing expiresAt
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, expiresAt: undefined },
+          validScanDesc
+        )
+      ).toThrow(/verification timestamp is missing or malformed/i);
+
+      // Non-date string
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, expiresAt: 'not-a-valid-date' },
+          validScanDesc
+        )
+      ).toThrow(/expired at|invalid/i);
+
+      // Past timestamp
+      const pastDate = new Date(Date.now() - 60000).toISOString();
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, expiresAt: pastDate },
+          validScanDesc
+        )
+      ).toThrow(/expired at/i);
+    });
+
+    it('createAuthoritativeScanScopeContext enforces non-empty trimmed identity strings', () => {
+      // Empty orgId
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, orgId: '   ' },
+          validScanDesc
+        )
+      ).toThrow(/must be non-empty strings/i);
+
+      // Empty siteId
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, siteId: '' },
+          validScanDesc
+        )
+      ).toThrow(/must be non-empty strings/i);
+
+      // Empty scanId
+      expect(() =>
+        createAuthoritativeScanScopeContext(validAsset, {
+          ...validScanDesc,
+          scanId: '   ',
+        })
+      ).toThrow(/must be non-empty strings/i);
+
+      // Empty primaryDomain
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, primaryDomain: '' },
+          validScanDesc
+        )
+      ).toThrow(/must be non-empty strings/i);
+
+      // Invalid approvedSubdomains
+      expect(() =>
+        createAuthoritativeScanScopeContext(
+          { ...validAsset, approvedSubdomains: ['valid.com', '  '] },
+          validScanDesc
+        )
+      ).toThrow(/contain invalid or empty domain strings/i);
+    });
+
+    it('createInternalScanContext rejects invalid timestamps, non-finite values, and non-verified states', () => {
+      const baseParams = {
+        orgId: 'org-test',
+        scanId: 'scan-test',
+        siteId: 'site-test',
+        primaryDomain: 'test.com',
+        status: 'VERIFIED' as const,
+        scanBlocked: false,
+        expiresAt: Date.now() + 100000,
+      };
+
+      // NaN expiresAt
+      expect(() =>
+        createInternalScanContext({ ...baseParams, expiresAt: NaN })
+      ).toThrow(/timestamp is invalid or expired/i);
+
+      // Infinity expiresAt
+      expect(() =>
+        createInternalScanContext({ ...baseParams, expiresAt: Infinity })
+      ).toThrow(/timestamp is invalid or expired/i);
+
+      // Negative expiresAt
+      expect(() =>
+        createInternalScanContext({ ...baseParams, expiresAt: -100 })
+      ).toThrow(/timestamp is invalid or expired/i);
+
+      // Past expiresAt
+      expect(() =>
+        createInternalScanContext({ ...baseParams, expiresAt: Date.now() - 5000 })
+      ).toThrow(/timestamp is invalid or expired/i);
+
+      // Missing primaryDomain
+      expect(() =>
+        createInternalScanContext({ ...baseParams, primaryDomain: '  ' })
+      ).toThrow(/must be non-empty strings/i);
+
+      // Invalid status
+      expect(() =>
+        createInternalScanContext({ ...baseParams, status: 'EXPIRED' as any })
+      ).toThrow(/has not completed ownership verification/i);
+
+      // scanBlocked: true
+      expect(() =>
+        createInternalScanContext({ ...baseParams, scanBlocked: true })
+      ).toThrow(/scanBlocked set to true/i);
+    });
+
+    it('createAuthoritativeVerificationScopeContext validates required domain and token', () => {
+      expect(() =>
+        createAuthoritativeVerificationScopeContext({
+          primaryDomain: '',
+          verificationToken: 'tok',
+        } as any)
+      ).toThrow(/Primary domain is required/i);
+
+      expect(() =>
+        createAuthoritativeVerificationScopeContext({
+          primaryDomain: 'example.com',
+          verificationToken: '   ',
+        } as any)
+      ).toThrow(/Active verification token is required/i);
+
+      const ctx = createAuthoritativeVerificationScopeContext({
+        primaryDomain: 'Example.COM',
+        verificationToken: 'vltx_tok_123',
+        orgId: 'org-1',
+        siteId: 'site-1',
+      } as any);
+
+      expect(ctx.primaryDomain).toBe('example.com');
+      expect(ctx.activeToken).toBe('vltx_tok_123');
+      expect(isTrustedScopeContext(ctx)).toBe(true);
+    });
+
+    describe('Protocol-Specific Standard Port Policy (Issue 5)', () => {
+      const getScanContextWithPorts = (allowedPorts?: number[]) =>
+        createAuthoritativeScanScopeContext(validAsset, {
+          scanId: 'scan-ports-001',
+          allowedPorts,
+        });
+
+      it('rejects port 443 over plaintext HTTP as non-standard without explicit authorization', () => {
+        const url = new URL('http://primary.example.com:443/test');
+        expect(() =>
+          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts())
+        ).toThrow(/Port 443 is non-standard and has not been explicitly authorized for protocol 'http:'/i);
+      });
+
+      it('rejects port 80 over TLS HTTPS as non-standard without explicit authorization', () => {
+        const url = new URL('https://primary.example.com:80/test');
+        expect(() =>
+          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts())
+        ).toThrow(/Port 80 is non-standard and has not been explicitly authorized for protocol 'https:'/i);
+      });
+
+      it('permits standard port 80 for HTTP', () => {
+        const url = new URL('http://primary.example.com:80/test');
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts());
+        expect(result.allowed).toBe(true);
+      });
+
+      it('permits standard port 443 for HTTPS', () => {
+        const url = new URL('https://primary.example.com:443/test');
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts());
+        expect(result.allowed).toBe(true);
+      });
+
+      it('permits port 443 over HTTP when explicitly whitelisted in allowedPorts', () => {
+        const url = new URL('http://primary.example.com:443/test');
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([443]));
+        expect(result.allowed).toBe(true);
+      });
+
+      it('permits port 80 over HTTPS when explicitly whitelisted in allowedPorts', () => {
+        const url = new URL('https://primary.example.com:80/test');
+        const result = AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([80]));
+        expect(result.allowed).toBe(true);
+      });
+
+      it('strictly blocks high-risk internal infrastructure port 22 even if included in allowedPorts', () => {
+        const url = new URL('http://primary.example.com:22/ssh-test');
+        expect(() =>
+          AuthorizedScanScopeGuard.validate(url, 'GET', getScanContextWithPorts([22]))
+        ).toThrow(/prohibited internal infrastructure port/i);
+      });
+    });
+
+    describe('DefaultHttpFetcher Strict Production Prohibition (Issue 4)', () => {
+      it('unconditionally throws FATAL_SECURITY_ERROR on instantiation in production', () => {
+        const prevEnv = process.env.NODE_ENV;
+        try {
+          process.env.NODE_ENV = 'production';
+
+          expect(() => new DefaultHttpFetcher()).toThrow(
+            /FATAL_SECURITY_ERROR: DefaultHttpFetcher is a legacy test adapter and is strictly prohibited in production/i
+          );
+
+          expect(() => new DefaultHttpFetcher({ allowLoopbackForTesting: true })).toThrow(
+            /FATAL_SECURITY_ERROR/i
+          );
+        } finally {
+          process.env.NODE_ENV = prevEnv;
+        }
+      });
+
+      it('unconditionally throws FATAL_SECURITY_ERROR on fetch invocation if environment is set to production', async () => {
+        const fetcher = new DefaultHttpFetcher({ allowLoopbackForTesting: true });
+        const prevEnv = process.env.NODE_ENV;
+        try {
+          process.env.NODE_ENV = 'production';
+          await expect(fetcher.fetch('http://example.com/')).rejects.toThrow(
+            /FATAL_SECURITY_ERROR: DefaultHttpFetcher is strictly prohibited in production/i
+          );
+        } finally {
+          process.env.NODE_ENV = prevEnv;
+        }
+      });
+
+      it('functions as backward-compatible test adapter in non-production environments', async () => {
+        const testServer = http.createServer((_req, res) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ legacy: 'ok' }));
+        });
+
+        await new Promise<void>((r) => testServer.listen(0, '127.0.0.1', r));
+        const port = (testServer.address() as net.AddressInfo).port;
+
+        try {
+          const fetcher = new DefaultHttpFetcher({ allowLoopbackForTesting: true });
+          const res = await fetcher.fetch(`http://127.0.0.1:${port}/legacy-test`);
+          expect(res.status).toBe(200);
+          expect(res.data).toEqual({ legacy: 'ok' });
+        } finally {
+          await new Promise<void>((r) => testServer.close(() => r()));
+        }
+      });
     });
   });
 

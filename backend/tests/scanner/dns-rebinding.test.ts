@@ -3,8 +3,8 @@ import net from 'node:net';
 import {
   SafeHttpClient,
   DnsResolver,
-  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
+import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
 
 describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
   it('mitigates DNS rebinding via pre-flight DNS pinning and prevents TOCTOU secondary lookup', async () => {

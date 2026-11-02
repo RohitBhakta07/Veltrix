@@ -6,8 +6,8 @@ import crypto from 'node:crypto';
 import {
   SafeHttpClient,
   DnsResolver,
-  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
+import { createAuthorizedScanScopeContext } from '../../src/scanner/transport/context-authority.js';
 
 describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)', () => {
   let server: http.Server;
