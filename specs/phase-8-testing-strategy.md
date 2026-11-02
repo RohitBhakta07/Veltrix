@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Testing Strategy — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.1.0 (Architecture Review Hardened)  
+**Document Version:** 1.2.0 (PR #17 Architecture Reconciliation Hardened)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Quality Assurance & Security Validation  
-**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
+**Status:** IN REVIEW (PR #17 Architecture Reconciliation)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -70,16 +70,29 @@ pie title Phase 8 Test Distribution
   - Query parameter edge cases (`/app?next=/logout`) $\to$ path normalized and evaluated safely.
 
 ### 3.3 Safe HTTP Transport & SSRF Filter Tests (`backend/tests/scanner/safe-transport.test.ts`)
-- **Request Authorization Context Separation:**
-  - `DOMAIN_OWNERSHIP_VERIFICATION` context allows request to challenge path (`/.well-known/veltrix-challenge/<token>`) even when asset status is `PENDING` / unverified (verifies zero circular dependency).
-  - `DOMAIN_OWNERSHIP_VERIFICATION` context rejects requests to non-challenge paths (e.g., `/admin`, `/api`) and strictly blocks 3xx redirects (`maxRedirects = 0`).
-  - `AUTHORIZED_SCAN` context rejects requests if asset status is `GRACE_PERIOD`, `EXPIRED`, `SUSPENDED`, or `REVOKED`, or if `scanBlocked: true`.
-  - Rejects attempts by callers to supply forged or unverified authorization context tokens.
-  - Scope and authorization evaluation executes **before** DNS queries and socket connection.
-- **HTTP Method & Outbound Port Policy:**
+- **ScopeGuard Boundary Decoupling (`VerificationScopeGuard` vs. `AuthorizedScanScopeGuard`):**
+  - **VerificationScopeGuard Path Whitelisting:**
+    - Path 1: `/.well-known/veltrix-challenge/<token>` allowed on pending asset (verifies zero circular dependency).
+    - Path 2: `/` (root HTML meta-tag retrieval) allowed on pending asset.
+    - Arbitrary Paths: Requests to `/admin`, `/api/v1/users`, or path traversal sequences (`/../`) on a pending asset are strictly rejected with `VERIFICATION_PATH_UNAUTHORIZED`.
+    - Redirect Rejection: Any 3xx response during verification fails closed with `REDIRECT_PROHIBITED_FOR_VERIFICATION` (`maxRedirects = 0`).
+  - **AuthorizedScanScopeGuard Verification Preconditions:**
+    - Rejects scan requests if asset status is `GRACE_PERIOD`, `EXPIRED`, `SUSPENDED`, or `REVOKED`, or if `scanBlocked: true`.
+    - Authorization check runs **before** DNS resolution and before socket connection.
+    - Rejects attempts by callers to supply forged or unverified authorization context tokens.
+  - **Exact Approved Subdomain Allowlisting:**
+    - Outbound requests to verified `primaryDomain` and exact entries in `approvedSubdomains` (e.g. `api.example.com`) are permitted.
+    - Wildcard subdomains (e.g. `*.example.com`) are **strictly prohibited**; every subdomain must be explicitly registered.
+    - Unapproved subdomains (e.g. `internal.example.com`) are dropped immediately before DNS lookup.
+  - **Path Exclusions:**
+    - Paths matching regex in `excludedPaths` (e.g., `^/auth/logout`) are dropped before dispatch.
+- **Outbound Port Policy & Safety Precedence:**
+  - Standard ports: HTTP (`80`) and HTTPS (`443`) permitted by default.
+  - Non-standard ports (e.g., `8080`, `8443`) rejected by default; permitted only with explicit server-side authorization.
+  - **Inviolable Denylist Precedence:** High-risk internal ports (22, 25, 3306, 5432, 6379, 27017, etc.) and private/internal IP destinations are **categorically barred** by transport security filters and can **never** be permitted via asset port allowlists.
+- **HTTP Method Policy:**
   - `GET` and `HEAD` requests permitted by default.
   - `DELETE`, `PUT`, `PATCH`, and `POST` rejected with `METHOD_NOT_PERMITTED` unless an explicit probe authorization policy is attached.
-  - Standard ports 80 and 443 permitted; arbitrary non-standard ports (e.g., 8080, 8443, 22, 3306) rejected unless explicitly authorized in asset configuration.
 - **Comprehensive IP Address Denylist Matrix:**
   | Input | Representation | Classification | Expected Result |
   | :--- | :--- | :--- | :--- |
@@ -128,8 +141,8 @@ pie title Phase 8 Test Distribution
   - `https://site.com/api` $\to$ `302 Location: http://127.0.0.1:8080/admin` $\to$ caught at hop 1, returns `SSRF_BLOCKED`.
   - `https://site.com/test` $\to$ `302 Location: http://[::1]/` $\to$ caught at hop 1, returns `SSRF_BLOCKED`.
 - **Scope & Cross-Tenant Escapes:**
-  - Cross-origin redirect to unapproved domain: `https://site.com/out` $\to$ `302 Location: https://attacker.com` $\to$ blocked by `ScopeGuard` before DNS resolution.
-  - Cross-subdomain redirect to approved subdomain: `https://site.com/app` $\to$ `302 Location: https://api.site.com` $\to$ allowed, but sensitive headers (`Authorization`, `Cookie`) are stripped.
+  - Cross-origin redirect to unapproved domain: `https://site.com/out` $\to$ `302 Location: https://attacker.com` $\to$ blocked by `AuthorizedScanScopeGuard` before DNS resolution.
+  - Cross-subdomain redirect to approved subdomain: `https://site.com/app` $\to$ `302 Location: https://api.site.com` $\to$ allowed, but sensitive headers (`Authorization`, `Cookie`, and tenant-specific custom headers) are stripped.
 - **Protocol Downgrade Ban:**
   - `https://site.com/secure` $\to$ `302 Location: http://site.com/insecure` $\to$ rejected immediately with `PROTOCOL_DOWNGRADE_BLOCKED`.
 
@@ -174,20 +187,26 @@ pie title Phase 8 Test Distribution
   - The second DNS resolution is never triggered during connection establishment.
   - Rebinding attack is completely mitigated.
 
-### 4.2 Decompression Bomb / Zip Bomb Harness (`backend/tests/scanner/zip-bomb.test.ts`)
-- **Decompressed Size Ceiling:**
+### 4.2 Decompression Bomb / Zip Bomb & Resource Limit Harness (`backend/tests/scanner/zip-bomb.test.ts`)
+- **Uncompressed Body Between 2 MB and 10 MB (Allowed):**
+  - In-process HTTP server serves a 5 MB uncompressed JSON/HTML payload (identity encoding, no compression headers).
+  - Stream and body parser receive all 5 MB cleanly; confirms that the 2 MB compressed-only limit is **not** accidentally applied to uncompressed responses.
+- **Raw Compressed Wire Data Ceiling (2 MB):**
+  - Server streams 3 MB of random gzip-compressed data.
+  - Stream terminates immediately at 2 MB compressed ceiling with `MAX_RESPONSE_SIZE_EXCEEDED` before decompression completes.
+- **Decompressed Size Ceiling (10 MB):**
   - In-process HTTP server serves a small 10 KB gzip stream that decompresses into 500 MB of zeros.
-  - Exactly at 10 MB uncompressed threshold, stream and underlying socket are destroyed with `MAX_RESPONSE_SIZE_EXCEEDED`.
+  - Exactly at 10 MB uncompressed threshold, decompressor stream and underlying socket are destroyed with `MAX_RESPONSE_SIZE_EXCEEDED`.
   - Process memory remains bounded (<100 MB delta); worker does not crash.
-- **Raw Compressed Data Ceiling:**
-  - Server streams 5 MB of random compressed data.
-  - Stream terminates immediately at 2 MB compressed ceiling with `MAX_RESPONSE_SIZE_EXCEEDED` before parsing finishes.
-- **Compression Expansion Ratio Ceiling:**
+- **Compression Expansion Ratio Ceiling (100:1):**
   - In-process server sends a stream with 200:1 expansion ratio.
-  - Stream transform terminates with `DECOMPRESSION_BOMB_DETECTED` after exceeding the 100:1 expansion limit.
+  - Stream transform terminates with `DECOMPRESSION_BOMB_DETECTED` after exceeding the 100:1 expansion limit (evaluated after 64 KB warm-up).
+- **Chunked Transfer Encoding Without Content-Length:**
+  - Server returns `Transfer-Encoding: chunked` without `Content-Length` header.
+  - Streamed byte counter tracks chunks continuously and enforces the 10 MB uncompressed limit reliably.
 - **Malformed & Unsupported Content-Encoding:**
   - Server sends invalid gzip header or unsupported compression algorithm (`content-encoding: zstd`).
-  - Client safely fails closed without unhandled exceptions or socket leaks.
+  - Client safely fails closed without unhandled exceptions, socket leaks, or process crash.
 
 ### 4.3 Slowloris / Hung Socket Harness (`backend/tests/scanner/slowloris.test.ts`)
 - **Test Setup:**
@@ -197,15 +216,19 @@ pie title Phase 8 Test Distribution
   - Socket is destroyed (`socket.destroy()`); worker moves to next endpoint without blocking.
 
 ### 4.4 Emergency Abort Latency & Tenant Isolation Benchmark (`backend/tests/scanner/abort-latency.test.ts`)
-- **Multi-Tenant Setup:**
-  - Launch Scan A (Tenant 1) with 10 long-polling requests.
-  - Launch Scan B (Tenant 2) with 10 long-polling requests concurrently.
+- **Explicit Tenant Identity Contract (`abortScan(orgId, scanId)`):**
+  - Verify internal abort signature requires both organization ID and scan ID: `abortScan(orgId: string, scanId: string): number`.
+- **Adversarial Identifier Collision Setup:**
+  - Launch Scan A for Tenant `org-alpha` with scan ID `scan-collision-001` (10 long-polling sockets).
+  - Launch Scan B for Tenant `org-bravo` with identical scan ID `scan-collision-001` (10 long-polling sockets) concurrently.
 - **Execution & Invariant Verification:**
-  - Issue `abortScan('scan-A')`.
-  - High-resolution timer verifies that all sockets for Scan A are closed in **< 500 ms** SLO.
+  - Invoke `abortScan('org-alpha', 'scan-collision-001')`.
+  - High-resolution timer verifies that all sockets for Tenant `org-alpha` are closed in **< 500 ms** SLO.
   - Scan A status reflects `ABORTED`.
-  - **Tenant Isolation Invariant:** Scan B's sockets remain active and healthy; zero cross-tenant impact.
-  - Active socket registry confirms 0 leaked sockets for Scan A.
+  - **Inviolable Multi-Tenant Isolation Invariant:** All 10 sockets for Tenant `org-bravo` remain active, connected, and completely healthy. Zero cross-tenant socket termination occurs.
+  - Active socket registry confirms 0 leaked sockets for Tenant `org-alpha`.
+- **Intra-Tenant Concurrency Isolation:**
+  - Verify that aborting `scan-1` for Tenant `org-alpha` does not terminate concurrent sockets for `scan-2` under `org-alpha`.
 
 ---
 

@@ -1,9 +1,9 @@
 # VELTRIX: Phase 8 Task Breakdown — Authorized Website Vulnerability Assessment
 
-**Document Version:** 1.1.0 (Architecture Review Hardened)  
+**Document Version:** 1.2.0 (PR #17 Architecture Reconciliation & TASK-802 Preparation)  
 **Phase:** Phase 8 (Architecture & Planning)  
 **Classification:** Engineering Task Breakdown & Work Breakdown Structure (WBS)  
-**Status:** DRAFT / IN REVIEW (PR #14 Consistency Review)  
+**Status:** IN REVIEW (PR #17 Architecture Reconciliation)  
 **Authors:** VELTRIX Core Security Team  
 
 ---
@@ -66,20 +66,20 @@ flowchart TD
 - **Priority:** P0 (Blocker)  
 - **Complexity:** High (5 SP)  
 - **Dependencies:** None (Builds on TASK-801 verification foundation)  
-- **Status:** READY FOR IMPLEMENTATION (Architecture Hardened)  
-- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` egress transport layer that enforces SSRF filtering, connection-level socket IP pinning, ambient proxy bypass, separate request authorization contexts, strict hop-by-hop redirect validation, streaming decompression safeguards, and scan-scoped emergency abort.
+- **Status:** Current — Architecture ready; implementation not started  
+- **Description:** Implement custom Node.js `http.Agent` and `https.Agent` egress transport layer that enforces SSRF filtering, connection-level socket IP pinning, ambient proxy bypass, separate request authorization contexts (`VerificationScopeGuard` vs `AuthorizedScanScopeGuard`), strict hop-by-hop redirect validation, independent streaming decompression safeguards, and tenant-scoped emergency abort.
 - **Key Deliverables:**
   - `backend/src/scanner/transport/types.ts`
   - `backend/src/scanner/transport/safe-http-client.ts`
-  - `backend/src/scanner/transport/ip-validator.ts` (extracted shared IPv4/IPv6 validator, backward-compatible re-exports in `http-verifier.ts`)
+  - `backend/src/scanner/transport/ip-validator.ts` (planned shared IPv4/IPv6 validator extraction, backward-compatible re-exports in `http-verifier.ts`)
   - `backend/src/scanner/transport/dns-resolver.ts`
   - `backend/src/scanner/transport/socket-connector.ts`
   - `backend/src/scanner/transport/redirect-handler.ts`
   - `backend/src/scanner/transport/stream-decompressor.ts`
 - **Acceptance Criteria:**
-  1. **Dual Request Authorization Contexts**:
-     - `DOMAIN_OWNERSHIP_VERIFICATION`: Permitted only for registered domain challenge paths; does not require prior VERIFIED status (avoids circular dependency); strictly forbids redirects (0 hops).
-     - `AUTHORIZED_SCAN`: Requires verified, unexpired, non-blocked domain ownership (`status === 'VERIFIED'`, `!scanBlocked`, `expiresAt > Date.now()`) and enforced `ScopeGuard` (`allowedHosts`, `excludedPaths`). Evaluated before DNS resolution and connection.
+  1. **Dual Scope Guards & Request Contexts**:
+     - `VerificationScopeGuard` (`DOMAIN_OWNERSHIP_VERIFICATION`): Permitted exclusively for registered domain challenge paths (`/.well-known/veltrix-challenge/<token>` and root `/` HTML meta-tag); operates before asset achieves VERIFIED status (zero circular dependency); strictly forbids redirects (`maxRedirects = 0`); rejects non-challenge paths with `VERIFICATION_PATH_UNAUTHORIZED`.
+     - `AuthorizedScanScopeGuard` (`AUTHORIZED_SCAN`): Requires verified, unexpired, non-blocked domain ownership (`status === 'VERIFIED'`, `!scanBlocked`, `expiresAt > Date.now()`). Enforces exact approved host allowlist (exact FQDN match; wildcards strictly forbidden) and path exclusions. Evaluated before DNS resolution and connection.
      - Contexts are server-derived via trusted internal services; untrusted API clients cannot select request purpose or forge context.
   2. **SSRF & IP Validation**:
      - Preserves all TASK-801 protections: canonical IPv4 normalization (octal/hex/dword), strict IPv6 parsing (requiring `missing >= 1` zero-compression, rejecting `%` zone IDs), positive `2000::/3` policy, preserved special exclusions (`2001::/23`, `2001:db8::/32`, `3fff::/20`), and 6to4 embedded IPv4 evaluation.
@@ -90,20 +90,23 @@ flowchart TD
      - TLS SNI (`servername`) passed; certificate hostname validation enforced (`rejectUnauthorized: true`).
   4. **Strict Redirect Policy**:
      - Default `maxRedirects = 0`. Domain verification never follows redirects.
-     - Authorized scanning follows redirects only with explicit policy & scope guard; every hop undergoes URL validation, DNS resolution, full IP validation, and scope verification.
+     - Authorized scanning follows redirects only with explicit policy & `AuthorizedScanScopeGuard`; every hop undergoes URL validation, DNS resolution, full IP validation, and scope verification.
      - Strictly rejects HTTPS-to-HTTP downgrade. Detects loops (`visitedUrls`) and enforces max 5 hops ceiling.
-     - Strips `Authorization` and `Cookie` headers on cross-origin redirects.
+     - Strips `Authorization`, `Cookie`, and tenant-specific custom headers on cross-origin redirects.
   5. **HTTP Method & Outbound Port Policy**:
      - Ordinary scanner requests default to `GET` and `HEAD` only. Unrestricted `DELETE`, `PUT`, `PATCH`, `POST` are barred.
      - Non-GET/HEAD methods require an explicitly authorized operation policy designed for that probe.
-     - Outbound ports restricted to 80 and 443 by default; non-standard ports require explicit server-controlled authorization policy.
+     - Canonical port default: HTTP `80` and HTTPS `443`. Non-standard ports (e.g. `8080`, `8443`) require explicit server-controlled authorization. Internal service ports (22, 25, 3306, 5432, 6379, 27017, etc.) and prohibited destinations can never be bypassed via port allowlists.
   6. **Streaming Decompression & Resource Limits**:
-     - Enforces independent streaming ceilings: max 2 MB raw compressed bytes, max 10 MB decompressed bytes, max 100:1 compression expansion ratio.
+     - Independent ceilings:
+       - Compressed responses: max 2 MB raw compressed wire data, max 10 MB decompressed body data, max 100:1 expansion ratio (after 64 KB warm-up).
+       - Identity / uncompressed responses: max 10 MB response body limit (2 MB compressed limit strictly excluded).
      - Never trusts `Content-Length` alone. Destroys stream and socket immediately if any ceiling is breached.
      - Handles unsupported or malformed encodings safely (fail closed).
-  7. **Granular Timeouts & Scan-Scoped Abort (500 ms SLO)**:
+  7. **Granular Timeouts & Tenant-Scoped Emergency Abort (500 ms SLO)**:
      - Enforces connection timeout (5s), response header timeout (10s), body idle timeout (15s), and total request timeout (30s).
-     - Active sockets tracked in scan-scoped registry: `abortScan(scanId)` terminates all sockets for that specific scan within **500 ms** SLO with complete tenant isolation.
+     - Active sockets tracked in tenant-and-scan registry: `abortScan(orgId, scanId)` terminates all sockets for that specific scan within **500 ms** SLO with complete tenant isolation.
+     - Concurrent scans across different tenants with identical scan IDs remain strictly isolated.
      - Process-wide abort reserved exclusively for process shutdown or host emergency.
   8. **Connection Reuse**:
      - Disabled cross-request reuse by default (`keepAlive: false`, `Connection: close`).
