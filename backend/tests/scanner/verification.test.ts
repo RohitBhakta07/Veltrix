@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import http from 'node:http';
 import https from 'node:https';
@@ -21,6 +21,7 @@ import { DnsVerifier } from '../../src/scanner/verification/dns-verifier.js';
 import {
   HttpVerifier,
   DefaultHttpFetcher,
+  DefaultSocketConnector,
   type AddressResolverInterface,
   type SocketConnectorInterface,
 } from '../../src/scanner/verification/http-verifier.js';
@@ -690,18 +691,81 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       expect(isProhibitedIp('169.254.169.254')).toBe(true);
       expect(isProhibitedIp('100.64.0.1')).toBe(true);
 
-      // IPv6 Loopback, ULA, Link-Local, and IMDSv6
+      // IPv6 Loopback, Unspecified, ULA, Link-Local, Site-Local, and IMDSv6
       expect(isProhibitedIp('::1')).toBe(true);
       expect(isProhibitedIp('::')).toBe(true);
+      expect(isProhibitedIp('0:0:0:0:0:0:0:1')).toBe(true);
       expect(isProhibitedIp('fe80::1')).toBe(true);
+      expect(isProhibitedIp('febf::ffff')).toBe(true);
+      expect(isProhibitedIp('fec0::1')).toBe(true);
       expect(isProhibitedIp('fc00::1')).toBe(true);
+      expect(isProhibitedIp('fd00::1')).toBe(true);
       expect(isProhibitedIp('fd00:ec2::254')).toBe(true);
-      expect(isProhibitedIp('::ffff:127.0.0.1')).toBe(true);
-      expect(isProhibitedIp('::ffff:169.254.169.254')).toBe(true);
 
-      // Valid Public IPs: allowed
+      // IPv4-mapped IPv6 (::ffff:0:0/96)
+      expect(isProhibitedIp('::ffff:127.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::ffff:10.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::ffff:169.254.169.254')).toBe(true);
+      expect(isProhibitedIp('::ffff:93.184.216.34')).toBe(false); // public IPv4 mapped
+
+      // IPv4-compatible IPv6 (deprecated ::0:0/96)
+      expect(isProhibitedIp('::127.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::10.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::93.184.216.34')).toBe(false); // public IPv4 compatible
+
+      // SIIT (::ffff:0:0:0/96, RFC 7915 / RFC 2765)
+      expect(isProhibitedIp('::ffff:0:127.0.0.1')).toBe(true);
+      expect(isProhibitedIp('::ffff:0:93.184.216.34')).toBe(true);
+      expect(isProhibitedIp('0:0:0:0:ffff:0:a00:1')).toBe(true);
+
+      // 6to4 (2002::/16, RFC 3056) - checks embedded IPv4 bytes 2..5
+      expect(isProhibitedIp('2002:7f00:0001::')).toBe(true); // embedded 127.0.0.1
+      expect(isProhibitedIp('2002:0a00:0001::')).toBe(true); // embedded 10.0.0.1
+      expect(isProhibitedIp('2002:c0a8:0101::')).toBe(true); // embedded 192.168.1.1
+      expect(isProhibitedIp('2002:a9fe:a9fe::')).toBe(true); // embedded 169.254.169.254 (IMDS)
+      expect(isProhibitedIp('2002:5db8:d822::1')).toBe(false); // embedded public 93.184.216.34 allowed
+
+      // Teredo (2001::/32, RFC 4380)
+      expect(isProhibitedIp('2001:0000:4136:e378:8000:63bf:3fff:fdd2')).toBe(true);
+      expect(isProhibitedIp('2001::1')).toBe(true);
+
+      // IETF Special-Purpose (2001::/23, RFC 6890)
+      expect(isProhibitedIp('2001:2::1')).toBe(true); // BMWG Benchmarking (RFC 5180)
+      expect(isProhibitedIp('2001:3::1')).toBe(true); // AMT (RFC 7450)
+      expect(isProhibitedIp('2001:4:112::1')).toBe(true); // AS112-v6 (RFC 7535)
+      expect(isProhibitedIp('2001:10::1')).toBe(true); // ORCHID (RFC 4843)
+      expect(isProhibitedIp('2001:20::1')).toBe(true); // ORCHIDv2 (RFC 7343)
+      expect(isProhibitedIp('2001:30::1')).toBe(true); // Drone ID DETs (RFC 9374)
+      expect(isProhibitedIp('2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(true); // Top of 2001::/23
+
+      // Documentation (2001:db8::/32 and 3fff::/20)
+      expect(isProhibitedIp('2001:db8::1')).toBe(true);
+      expect(isProhibitedIp('3fff::1')).toBe(true);
+
+      // NAT64 (64:ff9b::/96 and 64:ff9b:1::/48)
+      expect(isProhibitedIp('64:ff9b::192.168.1.1')).toBe(true);
+      expect(isProhibitedIp('64:ff9b:1::1')).toBe(true);
+
+      // Discard-only (100::/64)
+      expect(isProhibitedIp('100::1')).toBe(true);
+
+      // Multicast (ff00::/8)
+      expect(isProhibitedIp('ff02::1')).toBe(true);
+      expect(isProhibitedIp('ff05::2')).toBe(true);
+
+      // Legitimate Public IPv4 & IPv6: allowed
       expect(isProhibitedIp('93.184.216.34')).toBe(false);
-      expect(isProhibitedIp('2606:2800:220:1:248:1893:25c8:1946')).toBe(false);
+      expect(isProhibitedIp('2606:4700:4700::1111')).toBe(false); // Cloudflare Public DNS
+      expect(isProhibitedIp('2001:4860:4860::8888')).toBe(false); // Google Public DNS
+      expect(isProhibitedIp('2600:9000:21a2:b200:1a:8b67:9c00:93a1')).toBe(false); // AWS CloudFront
+      expect(isProhibitedIp('2606:2800:220:1:248:1893:25c8:1946')).toBe(false); // Example.com
+
+      // Malformed IPv6 fails closed
+      expect(isProhibitedIp(':::1')).toBe(true);
+      expect(isProhibitedIp('2001:xyz::1')).toBe(true);
+      expect(isProhibitedIp('1:2:3:4:5:6:7:8:9')).toBe(true);
+      expect(isProhibitedIp('')).toBe(true);
+      expect(isProhibitedIp('   ')).toBe(true);
     });
   });
 
@@ -753,13 +817,91 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
   });
 
   describe('8. DefaultHttpFetcher Connection-Level IP Pinning & SSRF Remediation (PR #15 Security Remediation)', () => {
-    it('confirms the actual socket connects only to the validated pinned IP', async () => {
-      let connectedHost = '';
-      let connectedPort = 0;
+    it('real socket destination verification: connects directly to controlled local TCP server without connector redirection, verifying live socket remoteAddress, remotePort, and single DNS lookup', async () => {
+      // 1. Controlled local TCP/HTTP server
+      let serverReceivedConnection = false;
+      let serverClientRemoteAddress = '';
+      const localServer = http.createServer((req, res) => {
+        serverReceivedConnection = true;
+        serverClientRemoteAddress = req.socket.remoteAddress || '';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ veltrixChallengeToken: 'real-socket-tok', orgId: 'org-alpha' }));
+      });
+
+      let localPort = 0;
+      await new Promise<void>((resolve) => {
+        localServer.listen(0, '127.0.0.1', () => {
+          localPort = (localServer.address() as net.AddressInfo).port;
+          resolve();
+        });
+      });
+
+      try {
+        // 2. Track DNS lookups to verify exactly one lookup occurs between validation and connection
+        let lookupCount = 0;
+        const trackingResolver: AddressResolverInterface = {
+          async lookup(hostname: string) {
+            lookupCount++;
+            return [{ address: '127.0.0.1', family: 4 }];
+          },
+        };
+
+        // 3. Spy on DefaultSocketConnector.prototype.connect to verify connector parameters without redirecting
+        const connectSpy = vi.spyOn(DefaultSocketConnector.prototype, 'connect');
+
+        let liveSocketRemoteAddress = '';
+        let liveSocketRemotePort = 0;
+
+        // 4. Instantiate DefaultHttpFetcher without mockConnector (uses real DefaultSocketConnector)
+        const fetcher = new DefaultHttpFetcher({
+          addressResolver: trackingResolver,
+          allowLoopbackForTesting: true,
+          onSocketConnected(info) {
+            liveSocketRemoteAddress = info.remoteAddress;
+            liveSocketRemotePort = info.remotePort;
+          },
+        });
+
+        const targetUrl = `http://real-target.alpha.org:${localPort}/.well-known/veltrix-challenge/real-socket-tok`;
+        const res = await fetcher.fetch(targetUrl);
+
+        // Verification assertions:
+        expect(res.status).toBe(200);
+        expect((res.data as any)?.veltrixChallengeToken).toBe('real-socket-tok');
+
+        // Verify that connector received the exact validated IP and port
+        expect(connectSpy).toHaveBeenCalledWith({
+          host: '127.0.0.1',
+          port: localPort,
+        });
+
+        // Verify the actual connected live socket's remoteAddress and remotePort (NOT mocked)
+        expect(liveSocketRemoteAddress).toBe('127.0.0.1');
+        expect(liveSocketRemotePort).toBe(localPort);
+        expect(res.remoteAddress).toBe('127.0.0.1');
+
+        // Verify server-side receipt from client
+        expect(serverReceivedConnection).toBe(true);
+        expect(serverClientRemoteAddress).toBe('127.0.0.1');
+
+        // Verify no second DNS lookup occurred between validation and connection
+        expect(lookupCount).toBe(1);
+
+        connectSpy.mockRestore();
+      } finally {
+        await new Promise<void>((resolve) => localServer.close(() => resolve()));
+      }
+    });
+
+    it('mock connector parameter verification: proves DefaultHttpFetcher passes the exact pinned IP and target port to the socket connector', async () => {
+      let connectorHostArg = '';
+      let connectorPortArg = 0;
       const mockConnector: SocketConnectorInterface = {
         connect(options) {
-          connectedHost = options.host;
-          connectedPort = options.port;
+          connectorHostArg = options.host;
+          connectorPortArg = options.port;
+          // In this unit test of connector dispatch parameters, the socket is redirected
+          // to our test server to avoid connecting to public IP 104.20.23.154.
           return net.connect({ host: '127.0.0.1', port: testHttpPort });
         },
         connectTls(options) {
@@ -773,24 +915,20 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
         },
       };
 
-      let onSocketRemote = '';
       const fetcher = new DefaultHttpFetcher({
         addressResolver: safeResolver,
         socketConnector: mockConnector,
-        onSocketConnected(info) {
-          onSocketRemote = info.remoteAddress;
-        },
       });
 
       const res = await fetcher.fetch('http://verified.domain.com/test');
       expect(res.status).toBe(200);
-      expect(connectedHost).toBe('104.20.23.154');
-      expect(connectedPort).toBe(80);
-      expect(onSocketRemote).toBe('127.0.0.1');
-      expect(res.remoteAddress).toBe('127.0.0.1');
+
+      // Verify connector parameter assertions (distinguished from real socket tests)
+      expect(connectorHostArg).toBe('104.20.23.154');
+      expect(connectorPortArg).toBe(80);
     });
 
-    it('prevents DNS rebinding: pins validated safe IP and never connects to rebound private IP', async () => {
+    it('prevents DNS rebinding: pins validated safe IP on single lookup and never connects to rebound private IP', async () => {
       let lookupCount = 0;
       const rebindResolver: AddressResolverInterface = {
         async lookup(hostname: string) {
@@ -808,6 +946,7 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       const mockConnector: SocketConnectorInterface = {
         connect(options) {
           connectedHost = options.host;
+          // Mock connector redirecting to local test server
           return net.connect({ host: '127.0.0.1', port: testHttpPort });
         },
         connectTls(options) {
@@ -826,6 +965,8 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       // Invariant: The connection MUST connect only to the validated pinned IP (93.184.216.34)
       expect(connectedHost).toBe('93.184.216.34');
       expect(connectedHost).not.toBe('169.254.169.254');
+      // Proves no second DNS lookup occurred
+      expect(lookupCount).toBe(1);
     });
 
     it('rejects destination if any resolved address is prohibited (fails closed on multi-IP resolution)', async () => {
@@ -932,14 +1073,39 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
         // Cloud Metadata & CGNAT
         'http://169.254.169.254/latest/meta-data',
         'http://100.64.0.1/test',
-        // IPv6
+        // IPv6 Loopback, ULA, Link-Local, and IMDSv6
         'http://[::1]/test',
         'http://[::]/test',
         'http://[fe80::1]/test',
+        'http://[febf::ffff]/test',
+        'http://[fec0::1]/test',
         'http://[fc00::1]/test',
+        'http://[fd00::1]/test',
         'http://[fd00:ec2::254]/latest/meta-data',
         'http://[::ffff:127.0.0.1]/test',
         'http://[::ffff:169.254.169.254]/test',
+        'http://[::127.0.0.1]/test',
+        // SIIT
+        'http://[::ffff:0:127.0.0.1]/test',
+        'http://[::ffff:0:169.254.169.254]/test',
+        // 6to4 with private/loopback/IMDS
+        'http://[2002:7f00:0001::]/test',
+        'http://[2002:0a00:0001::]/test',
+        'http://[2002:a9fe:a9fe::]/test',
+        // Teredo & IETF Special-Purpose
+        'http://[2001::1]/test',
+        'http://[2001:2::1]/test',
+        'http://[2001:10::1]/test',
+        'http://[2001:20::1]/test',
+        'http://[2001:30::1]/test',
+        'http://[2001:db8::1]/test',
+        'http://[3fff::1]/test',
+        // NAT64 & Discard
+        'http://[64:ff9b::192.168.1.1]/test',
+        'http://[64:ff9b:1::1]/test',
+        'http://[100::1]/test',
+        // Multicast
+        'http://[ff02::1]/test',
         // Prohibited literal hosts
         'http://localhost/test',
         'http://internal-service.local/test',
@@ -1115,7 +1281,46 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       );
     });
 
-    it('throws FATAL_SECURITY_ERROR when custom socket connector is passed in production', () => {
+    it('permits legitimate public IPv4 and IPv6 destinations during resolution and connection', async () => {
+      const publicTargets = [
+        { host: 'public-v4.example.com', ip: '93.184.216.34', family: 4 },
+        { host: 'cloudflare-v6.example.com', ip: '2606:4700:4700::1111', family: 6 },
+        { host: 'google-v6.example.com', ip: '2001:4860:4860::8888', family: 6 },
+        { host: 'aws-v6.example.com', ip: '2600:9000:21a2:b200:1a:8b67:9c00:93a1', family: 6 },
+        { host: '6to4-public.example.com', ip: '2002:5db8:d822::1', family: 6 },
+      ];
+
+      for (const target of publicTargets) {
+        let connectedHost = '';
+        const resolver: AddressResolverInterface = {
+          async lookup() {
+            return [{ address: target.ip, family: target.family }];
+          },
+        };
+
+        const mockConnector: SocketConnectorInterface = {
+          connect(options) {
+            connectedHost = options.host;
+            // Unit test assertion on connector parameter dispatch; redirect to local test server
+            return net.connect({ host: '127.0.0.1', port: testHttpPort });
+          },
+          connectTls(options) {
+            return tls.connect(options);
+          },
+        };
+
+        const fetcher = new DefaultHttpFetcher({
+          addressResolver: resolver,
+          socketConnector: mockConnector,
+        });
+
+        const res = await fetcher.fetch(`http://${target.host}/test`);
+        expect(res.status).toBe(200);
+        expect(connectedHost).toBe(target.ip);
+      }
+    });
+
+    it('throws FATAL_SECURITY_ERROR when custom socket connector or allowLoopbackForTesting is passed in production', () => {
       const origEnv = process.env.NODE_ENV;
       try {
         process.env.NODE_ENV = 'production';
@@ -1124,7 +1329,10 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
           connectTls: () => ({} as any),
         };
         expect(() => new DefaultHttpFetcher({ socketConnector: dummyConnector })).toThrow(
-          'FATAL_SECURITY_ERROR: Custom socket connectors are prohibited in production.'
+          'FATAL_SECURITY_ERROR: Custom socket connectors and test loopback options are prohibited in production.'
+        );
+        expect(() => new DefaultHttpFetcher({ allowLoopbackForTesting: true })).toThrow(
+          'FATAL_SECURITY_ERROR: Custom socket connectors and test loopback options are prohibited in production.'
         );
       } finally {
         process.env.NODE_ENV = origEnv;
