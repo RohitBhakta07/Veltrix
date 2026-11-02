@@ -2,7 +2,7 @@
  * VELTRIX Hardened Safe HTTP Transport Layer - Streaming Decompression Guard
  *
  * Enforces independent wire and decompressed size limits, continuous streaming byte accounting,
- * 100:1 decompression bomb detection, and fail-closed handling of malformed encodings.
+ * 100:1 decompression bomb detection, backpressure control, and fail-closed handling of malformed encodings.
  */
 
 import type http from 'node:http';
@@ -21,22 +21,28 @@ export interface DecompressedResponseResult {
   contentEncoding: string;
 }
 
+export interface StreamConsumerOptions {
+  maxWireBytes?: number;
+  maxDecompressedBytes?: number;
+  signal?: AbortSignal;
+  onChunkReceived?: () => void;
+}
+
 export class StreamDecompressor {
   static async consumeStream(
     res: http.IncomingMessage,
-    options?: {
-      maxWireBytes?: number;
-      maxDecompressedBytes?: number;
-    }
+    options?: StreamConsumerOptions
   ): Promise<DecompressedResponseResult> {
     const rawEncoding = (res.headers['content-encoding'] || '').trim().toLowerCase();
     const isCompressed = rawEncoding === 'gzip' || rawEncoding === 'deflate' || rawEncoding === 'br';
     const isIdentity = !rawEncoding || rawEncoding === 'identity';
 
     if (!isCompressed && !isIdentity) {
-      // Safely reject unsupported compression algorithms (e.g. zstd)
       try {
         res.destroy();
+      } catch {}
+      try {
+        res.socket?.destroy();
       } catch {}
       throw new SafeTransportError(
         'UNSUPPORTED_ENCODING',
@@ -59,6 +65,9 @@ export class StreamDecompressor {
           try {
             res.destroy();
           } catch {}
+          try {
+            res.socket?.destroy();
+          } catch {}
           throw new SafeTransportError(
             'MAX_RESPONSE_SIZE_EXCEEDED',
             `Declared compressed content-length (${declaredLength} bytes) exceeds maximum wire limit of ${maxWireLimit} bytes.`
@@ -67,6 +76,9 @@ export class StreamDecompressor {
         if (!isCompressed && declaredLength > maxDecompressedLimit) {
           try {
             res.destroy();
+          } catch {}
+          try {
+            res.socket?.destroy();
           } catch {}
           throw new SafeTransportError(
             'MAX_RESPONSE_SIZE_EXCEEDED',
@@ -82,10 +94,24 @@ export class StreamDecompressor {
 
     return new Promise<DecompressedResponseResult>((resolve, reject) => {
       let settled = false;
+      let abortHandler: (() => void) | null = null;
+      let decompressorStream: zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress | null = null;
+
+      const cleanup = () => {
+        if (options?.signal && abortHandler) {
+          options.signal.removeEventListener('abort', abortHandler);
+        }
+      };
 
       const fail = (err: SafeTransportError) => {
         if (settled) return;
         settled = true;
+        cleanup();
+        if (decompressorStream) {
+          try {
+            decompressorStream.destroy();
+          } catch {}
+        }
         try {
           res.destroy();
         } catch {}
@@ -95,9 +121,22 @@ export class StreamDecompressor {
         reject(err);
       };
 
+      // AbortSignal listener during stream processing
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          fail(new SafeTransportError('ABORTED', 'Request was cancelled by AbortSignal during response transfer.'));
+          return;
+        }
+        abortHandler = () => {
+          fail(new SafeTransportError('ABORTED', 'Request was cancelled by AbortSignal during response transfer.'));
+        };
+        options.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
       if (!isCompressed) {
         // Identity / Uncompressed stream processing
         res.on('data', (chunk: Buffer) => {
+          options?.onChunkReceived?.();
           wireBytesReceived += chunk.length;
           decompressedBytes += chunk.length;
 
@@ -117,6 +156,7 @@ export class StreamDecompressor {
         res.on('end', () => {
           if (settled) return;
           settled = true;
+          cleanup();
           resolve({
             bodyBuffer: Buffer.concat(bodyChunks),
             wireBytesReceived,
@@ -137,7 +177,6 @@ export class StreamDecompressor {
       }
 
       // Compressed stream processing
-      let decompressorStream: zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress;
       if (rawEncoding === 'gzip') {
         decompressorStream = zlib.createGunzip();
       } else if (rawEncoding === 'deflate') {
@@ -148,12 +187,10 @@ export class StreamDecompressor {
 
       // Monitor raw incoming wire chunks
       res.on('data', (chunk: Buffer) => {
+        options?.onChunkReceived?.();
         wireBytesReceived += chunk.length;
 
         if (wireBytesReceived > maxWireLimit) {
-          try {
-            decompressorStream.destroy();
-          } catch {}
           fail(
             new SafeTransportError(
               'MAX_RESPONSE_SIZE_EXCEEDED',
@@ -164,7 +201,13 @@ export class StreamDecompressor {
         }
 
         try {
-          decompressorStream.write(chunk);
+          const canContinue = decompressorStream!.write(chunk);
+          if (!canContinue) {
+            res.pause();
+            decompressorStream!.once('drain', () => {
+              res.resume();
+            });
+          }
         } catch (writeErr) {
           fail(
             new SafeTransportError(
@@ -177,14 +220,11 @@ export class StreamDecompressor {
 
       res.on('end', () => {
         try {
-          decompressorStream.end();
+          decompressorStream?.end();
         } catch {}
       });
 
       res.on('error', (err) => {
-        try {
-          decompressorStream.destroy();
-        } catch {}
         fail(
           new SafeTransportError(
             'UNSUPPORTED_ENCODING',
@@ -195,12 +235,10 @@ export class StreamDecompressor {
 
       // Monitor decompressed output chunks
       decompressorStream.on('data', (chunk: Buffer) => {
+        options?.onChunkReceived?.();
         decompressedBytes += chunk.length;
 
         if (decompressedBytes > maxDecompressedLimit) {
-          try {
-            decompressorStream.destroy();
-          } catch {}
           fail(
             new SafeTransportError(
               'MAX_RESPONSE_SIZE_EXCEEDED',
@@ -214,9 +252,6 @@ export class StreamDecompressor {
         if (decompressedBytes >= EXPANSION_WARMUP_BYTES) {
           const ratio = decompressedBytes / (wireBytesReceived || 1);
           if (ratio > MAX_EXPANSION_RATIO) {
-            try {
-              decompressorStream.destroy();
-            } catch {}
             fail(
               new SafeTransportError(
                 'DECOMPRESSION_BOMB_DETECTED',
@@ -233,6 +268,7 @@ export class StreamDecompressor {
       decompressorStream.on('end', () => {
         if (settled) return;
         settled = true;
+        cleanup();
         resolve({
           bodyBuffer: Buffer.concat(bodyChunks),
           wireBytesReceived,

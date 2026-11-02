@@ -5,7 +5,8 @@ import {
   SafeHttpClient,
   DnsResolver,
   SafeTransportError,
-  type RequestAuthorizationContext,
+  createAuthorizedScanScopeContext,
+  createVerificationScopeContext,
 } from '../../src/scanner/transport/index.js';
 
 describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
@@ -64,19 +65,19 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         return;
       }
 
-      // SSRF Escape endpoints
+      // Malicious SSRF redirects
       if (url.pathname === '/ssrf-imds') {
-        res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data' });
+        res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' });
         res.end();
         return;
       }
       if (url.pathname === '/ssrf-local') {
-        res.writeHead(302, { Location: 'http://127.0.0.1:8080/admin' });
+        res.writeHead(302, { Location: 'http://127.0.0.1:8080/internal' });
         res.end();
         return;
       }
       if (url.pathname === '/ssrf-ipv6') {
-        res.writeHead(302, { Location: 'http://[::1]/' });
+        res.writeHead(302, { Location: 'http://[::1]:8080/internal' });
         res.end();
         return;
       }
@@ -112,17 +113,19 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await new Promise<void>((resolve) => redirectServer.close(() => resolve()));
   });
 
-  const baseAuthorizedContext: RequestAuthorizationContext = {
-    purpose: 'AUTHORIZED_SCAN',
-    orgId: 'org-enterprise-01',
-    scanId: 'scan-001',
-    siteId: 'site-001',
-    primaryDomain: 'primary.example.com',
-    approvedSubdomains: ['sub.example.com'],
-    status: 'VERIFIED',
-    scanBlocked: false,
-    expiresAt: Date.now() + 86400000,
-  };
+  const getAuthorizedContext = (overrides?: any) =>
+    createAuthorizedScanScopeContext({
+      orgId: 'org-enterprise-01',
+      scanId: 'scan-001',
+      siteId: 'site-001',
+      primaryDomain: 'primary.example.com',
+      approvedSubdomains: ['sub.example.com'],
+      status: 'VERIFIED',
+      scanBlocked: false,
+      expiresAt: Date.now() + 86400000,
+      allowedPorts: [serverPort],
+      ...overrides,
+    });
 
   const createTestClient = () => {
     return new SafeHttpClient({
@@ -141,11 +144,10 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await expect(
       client.get(`http://primary.example.com:${serverPort}/.well-known/veltrix-challenge/${token}`, {
         allowLoopbackForTesting: true,
-        context: {
-          purpose: 'DOMAIN_OWNERSHIP_VERIFICATION',
+        context: createVerificationScopeContext({
           primaryDomain: 'primary.example.com',
           activeToken: token,
-        },
+        }),
       })
     ).rejects.toThrow();
   });
@@ -154,10 +156,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/redirect-1`, {
       allowLoopbackForTesting: true,
-      context: {
-        ...baseAuthorizedContext,
-        allowedPorts: [serverPort],
-      },
+      context: getAuthorizedContext(),
     });
 
     expect(res.status).toBe(302);
@@ -170,10 +169,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     const res = await client.get(`http://primary.example.com:${serverPort}/redirect-1`, {
       maxRedirects: 3,
       allowLoopbackForTesting: true,
-      context: {
-        ...baseAuthorizedContext,
-        allowedPorts: [serverPort],
-      },
+      context: getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);
@@ -187,10 +183,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/chain-1`, {
         maxRedirects: 3,
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getAuthorizedContext(),
       })
     ).rejects.toThrow(/Maximum redirect limit of 3 hops exceeded/i);
   });
@@ -201,10 +194,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/loop-a`, {
         maxRedirects: 5,
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getAuthorizedContext(),
       })
     ).rejects.toThrow(/Redirect loop detected/i);
   });
@@ -217,10 +207,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/ssrf-imds`, {
         maxRedirects: 2,
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getAuthorizedContext(),
       })
     ).rejects.toThrow(/out of authorized scan scope|prohibited IP address/i);
 
@@ -239,10 +226,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
     await expect(
       strictClient.get(`http://primary.example.com:${serverPort}/ssrf-local`, {
         maxRedirects: 2,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort, 8080],
-        },
+        context: getAuthorizedContext({ allowedPorts: [serverPort, 8080] }),
       })
     ).rejects.toThrow(SafeTransportError);
 
@@ -251,10 +235,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       client.get(`http://primary.example.com:${serverPort}/ssrf-ipv6`, {
         maxRedirects: 2,
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getAuthorizedContext(),
       })
     ).rejects.toThrow(SafeTransportError);
   });
@@ -277,10 +258,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         client.get(`http://primary.example.com:${extPort}/external`, {
           maxRedirects: 2,
           allowLoopbackForTesting: true,
-          context: {
-            ...baseAuthorizedContext,
-            allowedPorts: [extPort],
-          },
+          context: getAuthorizedContext({ allowedPorts: [serverPort, extPort] }),
         })
       ).rejects.toThrow(/out of authorized scan scope/i);
     } finally {
@@ -299,10 +277,7 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
         'X-Org-Id': 'org-enterprise-01',
         'X-Safe-Header': 'keep-me',
       },
-      context: {
-        ...baseAuthorizedContext,
-        allowedPorts: [serverPort],
-      },
+      context: getAuthorizedContext(),
     });
 
     expect(res.status).toBe(200);
@@ -319,11 +294,9 @@ describe('Phase 8: Hop-by-Hop Redirect Validation (TASK-802)', () => {
       body: JSON.stringify({ item: 'data' }),
       maxRedirects: 2,
       allowLoopbackForTesting: true,
-      context: {
-        ...baseAuthorizedContext,
+      context: getAuthorizedContext({
         allowedMethods: ['GET', 'HEAD', 'POST'],
-        allowedPorts: [serverPort],
-      },
+      }),
     });
 
     expect(res.status).toBe(200);

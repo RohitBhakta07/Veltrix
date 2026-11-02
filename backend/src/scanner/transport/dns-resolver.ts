@@ -25,8 +25,13 @@ export class DnsResolver implements DnsResolverInterface {
   private readonly allowLoopbackForTesting: boolean;
 
   constructor(options?: DnsResolverOptions) {
-    if (process.env.NODE_ENV === 'production' && options?.allowLoopbackForTesting) {
-      throw new Error('FATAL_SECURITY_ERROR: Test loopback options are prohibited in production.');
+    if (process.env.NODE_ENV === 'production') {
+      if (options?.lookupFn) {
+        throw new Error('FATAL_SECURITY_ERROR: Injected lookupFn is prohibited in production.');
+      }
+      if (options?.allowLoopbackForTesting) {
+        throw new Error('FATAL_SECURITY_ERROR: Test loopback options are prohibited in production.');
+      }
     }
 
     this.allowLoopbackForTesting = options?.allowLoopbackForTesting === true && process.env.NODE_ENV !== 'production';
@@ -40,9 +45,13 @@ export class DnsResolver implements DnsResolverInterface {
     });
   }
 
-  async resolve(hostname: string, options?: { timeoutMs?: number }): Promise<ValidatedDnsResolution> {
+  async resolve(hostname: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<ValidatedDnsResolution> {
     if (!hostname || typeof hostname !== 'string') {
       throw new SafeTransportError('MALFORMED_URL', 'Invalid or empty hostname provided for DNS resolution.');
+    }
+
+    if (options?.signal?.aborted) {
+      throw new SafeTransportError('ABORTED', 'DNS resolution was cancelled by AbortSignal.');
     }
 
     const rawHostname = hostname.trim().toLowerCase();
@@ -88,17 +97,29 @@ export class DnsResolver implements DnsResolverInterface {
     try {
       const lookupPromise = this.lookupFn(cleanHostname);
       let timer: NodeJS.Timeout;
+      let abortHandler: (() => void) | null = null;
+
       const timeoutPromise = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           reject(new SafeTransportError('DNS_RESOLUTION_FAILED', `DNS resolution timed out after ${timeoutMs}ms for host '${cleanHostname}'.`));
         }, timeoutMs);
         timer.unref?.();
+
+        if (options?.signal) {
+          abortHandler = () => {
+            reject(new SafeTransportError('ABORTED', 'DNS resolution was cancelled by AbortSignal.'));
+          };
+          options.signal.addEventListener('abort', abortHandler, { once: true });
+        }
       });
 
       try {
         records = await Promise.race([lookupPromise, timeoutPromise]);
       } finally {
         clearTimeout(timer!);
+        if (options?.signal && abortHandler) {
+          options.signal.removeEventListener('abort', abortHandler);
+        }
       }
     } catch (err: unknown) {
       if (err instanceof SafeTransportError) {

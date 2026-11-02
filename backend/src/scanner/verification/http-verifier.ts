@@ -12,10 +12,20 @@ export interface HttpResponse {
   remoteAddress?: string;
 }
 
+import type { VerificationScopeContext } from '../transport/types.js';
+
 export interface HttpFetcherInterface {
   fetch(
     url: string,
-    options?: { timeoutMs?: number; signal?: AbortSignal }
+    options?: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      token?: string;
+      primaryDomain?: string;
+      orgId?: string;
+      siteId?: string;
+      context?: VerificationScopeContext;
+    }
   ): Promise<HttpResponse>;
 }
 
@@ -76,7 +86,8 @@ export {
   isProhibitedIp,
 };
 
-export { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
+import { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
+export { SafeVerificationHttpFetcher };
 
 export interface DefaultHttpFetcherOptions {
   addressResolver?: AddressResolverInterface;
@@ -385,12 +396,22 @@ export class HttpVerifier {
   private readonly fetcher: HttpFetcherInterface;
 
   constructor(fetcher?: HttpFetcherInterface) {
-    this.fetcher = fetcher || new DefaultHttpFetcher();
+    this.fetcher = fetcher || new SafeVerificationHttpFetcher();
   }
 
-  async verify(url: string, expectedToken: string, expectedOrgId: string): Promise<HttpVerificationResult> {
+  async verify(
+    url: string,
+    expectedToken: string,
+    expectedOrgId: string,
+    context?: VerificationScopeContext
+  ): Promise<HttpVerificationResult> {
     try {
-      const { status, data } = await this.fetcher.fetch(url, { timeoutMs: 5000 });
+      const { status, data } = await this.fetcher.fetch(url, {
+        timeoutMs: 5000,
+        token: expectedToken,
+        orgId: expectedOrgId,
+        context,
+      });
 
       if (status !== 200) {
         return {

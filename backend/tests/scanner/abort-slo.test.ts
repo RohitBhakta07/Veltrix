@@ -6,7 +6,7 @@ import {
   ActiveSocketRegistry,
   SafeHttpClient,
   DnsResolver,
-  type RequestAuthorizationContext,
+  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
 
 describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (TASK-802)', () => {
@@ -46,8 +46,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
     const collisionScanId = 'scan-collision-001';
 
     // Tenant A Context
-    const tenantAContext: RequestAuthorizationContext = {
-      purpose: 'AUTHORIZED_SCAN',
+    const tenantAContext = createAuthorizedScanScopeContext({
       orgId: 'org-alpha',
       scanId: collisionScanId,
       siteId: 'site-alpha-001',
@@ -57,11 +56,10 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
       scanBlocked: false,
       expiresAt: Date.now() + 86400000,
       allowedPorts: [serverPort],
-    };
+    });
 
     // Tenant B Context (Identical scanId!)
-    const tenantBContext: RequestAuthorizationContext = {
-      purpose: 'AUTHORIZED_SCAN',
+    const tenantBContext = createAuthorizedScanScopeContext({
       orgId: 'org-bravo',
       scanId: collisionScanId,
       siteId: 'site-bravo-001',
@@ -71,7 +69,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
       scanBlocked: false,
       expiresAt: Date.now() + 86400000,
       allowedPorts: [serverPort],
-    };
+    });
 
     // Dispatch 5 concurrent long-polling requests for Tenant A
     const tenantAPromises = Array.from({ length: 5 }, () =>
@@ -138,8 +136,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
 
     const orgId = 'org-enterprise-01';
 
-    const scan1Context: RequestAuthorizationContext = {
-      purpose: 'AUTHORIZED_SCAN',
+    const scan1Context = createAuthorizedScanScopeContext({
       orgId,
       scanId: 'scan-alpha-1',
       siteId: 'site-001',
@@ -149,10 +146,9 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
       scanBlocked: false,
       expiresAt: Date.now() + 86400000,
       allowedPorts: [serverPort],
-    };
+    });
 
-    const scan2Context: RequestAuthorizationContext = {
-      purpose: 'AUTHORIZED_SCAN',
+    const scan2Context = createAuthorizedScanScopeContext({
       orgId,
       scanId: 'scan-alpha-2',
       siteId: 'site-002',
@@ -162,7 +158,7 @@ describe('Phase 8: Emergency Abort Latency & Multi-Tenant Isolation Benchmark (T
       scanBlocked: false,
       expiresAt: Date.now() + 86400000,
       allowedPorts: [serverPort],
-    };
+    });
 
     const scan1Promises = Array.from({ length: 3 }, () =>
       client.get(`http://primary.example.com:${serverPort}/poll1`, {

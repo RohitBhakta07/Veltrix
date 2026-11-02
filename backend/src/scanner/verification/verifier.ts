@@ -2,8 +2,10 @@ import { randomBytes, createHash } from 'node:crypto';
 import type { WebsiteAsset, VerificationMethod } from '@veltrix/shared';
 import type { StorageInterface } from '../../storage/storage-interface.js';
 import { DnsVerifier, type DnsResolverInterface, DefaultDnsResolver } from './dns-verifier.js';
-import { HttpVerifier, type HttpFetcherInterface, DefaultHttpFetcher, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
+import { HttpVerifier, type HttpFetcherInterface, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
 import { MetaVerifier } from './meta-verifier.js';
+import { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
+import { createVerificationScopeContext } from '../transport/types.js';
 
 export { isProhibitedIp, isProhibitedIpv4 };
 
@@ -64,7 +66,7 @@ export class DomainOwnershipVerifier {
     }
 
     this.dnsVerifier = new DnsVerifier(resolver || new DefaultDnsResolver());
-    const finalFetcher = fetcher || new DefaultHttpFetcher();
+    const finalFetcher = fetcher || new SafeVerificationHttpFetcher();
     this.httpVerifier = new HttpVerifier(finalFetcher);
     this.metaVerifier = new MetaVerifier(finalFetcher);
   }
@@ -251,13 +253,25 @@ export class DomainOwnershipVerifier {
       const expectedUrl = site.httpChallenge.url;
       const expectedToken = site.httpChallenge.expectedBody.veltrixChallengeToken;
       const expectedOrgId = site.httpChallenge.expectedBody.orgId;
-      const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId);
+      const verificationContext = createVerificationScopeContext({
+        primaryDomain: site.primaryDomain,
+        activeToken: expectedToken,
+        orgId,
+        siteId,
+      });
+      const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     } else if (method === 'META_TAG') {
       const targetUrl = `https://${site.primaryDomain.toLowerCase().trim()}/`;
       const expectedToken = site.verificationToken;
-      const res = await this.metaVerifier.verify(targetUrl, expectedToken);
+      const verificationContext = createVerificationScopeContext({
+        primaryDomain: site.primaryDomain,
+        activeToken: expectedToken,
+        orgId,
+        siteId,
+      });
+      const res = await this.metaVerifier.verify(targetUrl, expectedToken, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     }

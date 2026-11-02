@@ -12,6 +12,7 @@ import {
   type VerificationScopeContext,
   type AuthorizedScanScopeContext,
   SafeTransportError,
+  isTrustedScopeContext,
 } from './types.js';
 
 /**
@@ -262,10 +263,10 @@ export function validateRequestScope(
   context: RequestAuthorizationContext,
   options?: { maxRedirects?: number }
 ): ScopeValidationResult {
-  if (!context || typeof context !== 'object') {
+  if (!context || typeof context !== 'object' || !isTrustedScopeContext(context)) {
     throw new SafeTransportError(
       'DOMAIN_NOT_VERIFIED',
-      'Missing or invalid request authorization context.'
+      'Untrusted or forged request authorization context rejected. Context must be created via trusted internal service.'
     );
   }
 

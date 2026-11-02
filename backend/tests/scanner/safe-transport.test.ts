@@ -12,6 +12,9 @@ import {
   isProhibitedIp,
   BLOCKED_INTERNAL_PORTS,
   type RequestAuthorizationContext,
+  createAuthorizedScanScopeContext,
+  createVerificationScopeContext,
+  SafeVerificationHttpFetcher,
 } from '../../src/scanner/transport/index.js';
 
 describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
@@ -379,8 +382,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       const res = await client.get(`http://primary.example.com:${localHttpPort}/test-socket`, {
         allowLoopbackForTesting: true,
-        context: {
-          purpose: 'AUTHORIZED_SCAN',
+        context: createAuthorizedScanScopeContext({
           orgId: 'org-1',
           scanId: 'scan-1',
           siteId: 'site-1',
@@ -390,7 +392,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
           scanBlocked: false,
           expiresAt: Date.now() + 86400000,
           allowedPorts: [localHttpPort],
-        },
+        }),
       });
 
       expect(res.status).toBe(200);
@@ -413,8 +415,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       await expect(
         client.get('http://dualstack.example.com/', {
-          context: {
-            purpose: 'AUTHORIZED_SCAN',
+          context: createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -423,7 +424,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             status: 'VERIFIED',
             scanBlocked: false,
             expiresAt: Date.now() + 86400000,
-          },
+          }),
         })
       ).rejects.toThrow(/resolved to prohibited IP address '10\.0\.0\.1'/i);
     });
@@ -447,8 +448,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
         const res = await client.get(`http://primary.example.com:${localHttpPort}/proxy-bypass-test`, {
           allowLoopbackForTesting: true,
-          context: {
-            purpose: 'AUTHORIZED_SCAN',
+          context: createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -458,7 +458,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             scanBlocked: false,
             expiresAt: Date.now() + 86400000,
             allowedPorts: [localHttpPort],
-          },
+          }),
         });
 
         // Connected directly to local server, ignoring 169.254.169.254 proxy
@@ -490,8 +490,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
       await expect(
         client.get('https://secure.example.com/', {
-          context: {
-            purpose: 'AUTHORIZED_SCAN',
+          context: createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -500,7 +499,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             status: 'VERIFIED',
             scanBlocked: false,
             expiresAt: Date.now() + 86400000,
-          },
+          }),
         })
       ).rejects.toThrow(/self-signed certificate|certificate/i);
     });
@@ -525,8 +524,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         client.get(`http://primary.example.com:${localHttpPort}/slow-headers`, {
           signal: controller.signal,
           allowLoopbackForTesting: true,
-          context: {
-            purpose: 'AUTHORIZED_SCAN',
+          context: createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -536,9 +534,9 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             scanBlocked: false,
             expiresAt: Date.now() + 86400000,
             allowedPorts: [localHttpPort],
-          },
+          }),
         })
-      ).rejects.toThrow(/cancelled by AbortSignal/i);
+      ).rejects.toThrow(/cancelled by.*AbortSignal/i);
     });
 
     it('enforces total request timeout watchdog', async () => {
@@ -556,8 +554,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         client.get(`http://primary.example.com:${localHttpPort}/slow-headers`, {
           timeoutMs: 50,
           allowLoopbackForTesting: true,
-          context: {
-            purpose: 'AUTHORIZED_SCAN',
+          context: createAuthorizedScanScopeContext({
             orgId: 'org-1',
             scanId: 'scan-1',
             siteId: 'site-1',
@@ -567,9 +564,414 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
             scanBlocked: false,
             expiresAt: Date.now() + 86400000,
             allowedPorts: [localHttpPort],
-          },
+          }),
         })
       ).rejects.toThrow(/timed out/i);
     });
   });
+
+  describe('7. TASK-802 Independent Security Audit Remediation Suite', () => {
+    it('rejects custom dnsResolver, lookupFn, and loopback in production environment', () => {
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+
+        // SafeHttpClient rejects custom dnsResolver in production
+        expect(
+          () =>
+            new SafeHttpClient({
+              dnsResolver: new DnsResolver(),
+            })
+        ).toThrow(/Injected DNS resolvers? are prohibited in production/i);
+
+        // SafeHttpClient rejects custom socketConnector in production
+        expect(
+          () =>
+            new SafeHttpClient({
+              socketConnector: { connect: () => ({} as any), connectTls: () => ({} as any) },
+            })
+        ).toThrow(/Custom socket connectors are prohibited in production/i);
+
+        // SafeHttpClient rejects allowLoopbackForTesting in production
+        expect(
+          () =>
+            new SafeHttpClient({
+              allowLoopbackForTesting: true,
+            })
+        ).toThrow(/Test loopback options are prohibited in production/i);
+
+        // DnsResolver rejects lookupFn in production
+        expect(
+          () =>
+            new DnsResolver({
+              lookupFn: async () => [{ address: '1.2.3.4', family: 4 }],
+            })
+        ).toThrow(/Injected lookupFn is prohibited in production/i);
+
+        // DnsResolver rejects allowLoopbackForTesting in production
+        expect(
+          () =>
+            new DnsResolver({
+              allowLoopbackForTesting: true,
+            })
+        ).toThrow(/Test loopback options are prohibited in production/i);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    it('defense-in-depth: SafeHttpClient catches and blocks prohibited pinnedIp returned by custom resolver', async () => {
+      const maliciousResolver = {
+        async resolve() {
+          return {
+            hostname: 'example.com',
+            records: [{ address: '169.254.169.254', family: 4 }],
+            pinnedIp: '169.254.169.254',
+            family: 4,
+          };
+        },
+      };
+
+      const client = new SafeHttpClient({ dnsResolver: maliciousResolver });
+      const context = createAuthorizedScanScopeContext({
+        orgId: 'org-1',
+        scanId: 'scan-1',
+        siteId: 'site-1',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      });
+
+      await expect(
+        client.get('http://example.com/test', { context })
+      ).rejects.toThrow(/resolved to prohibited address '169\.254\.169\.254'/i);
+    });
+
+    it('defense-in-depth: SafeHttpClient blocks pinnedIp that does not match any DNS record', async () => {
+      const spoofResolver = {
+        async resolve() {
+          return {
+            hostname: 'example.com',
+            records: [{ address: '93.184.216.34', family: 4 }],
+            pinnedIp: '93.184.216.35', // Spoofed pinned IP not in records
+            family: 4,
+          };
+        },
+      };
+
+      const client = new SafeHttpClient({ dnsResolver: spoofResolver });
+      const context = createAuthorizedScanScopeContext({
+        orgId: 'org-1',
+        scanId: 'scan-1',
+        siteId: 'site-1',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      });
+
+      await expect(
+        client.get('http://example.com/test', { context })
+      ).rejects.toThrow(/Pinned IP '93\.184\.216\.35' does not match any validated DNS record/i);
+    });
+
+    it('rejects plain unbranded JSON contexts before any DNS lookup or network activity occurs', async () => {
+      let dnsCalled = false;
+      const resolver = new DnsResolver({
+        lookupFn: async () => {
+          dnsCalled = true;
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      });
+
+      const client = new SafeHttpClient({ dnsResolver: resolver });
+
+      const forgedContext = {
+        purpose: 'AUTHORIZED_SCAN',
+        orgId: 'org-forged',
+        scanId: 'scan-forged',
+        siteId: 'site-forged',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      } as any;
+
+      await expect(
+        client.get('http://example.com/test', { context: forgedContext })
+      ).rejects.toThrow(/Untrusted or forged request authorization context rejected/i);
+
+      expect(dnsCalled).toBe(false);
+    });
+
+    it('SafeVerificationHttpFetcher rejects request if URL domain does not match trusted context primaryDomain', async () => {
+      const client = new SafeHttpClient({
+        dnsResolver: new DnsResolver({
+          lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+          allowLoopbackForTesting: true,
+        }),
+        allowLoopbackForTesting: true,
+      });
+
+      const fetcher = new SafeVerificationHttpFetcher({ client, allowLoopbackForTesting: true });
+      const trustedContext = createVerificationScopeContext({
+        primaryDomain: 'legitimate.com',
+        activeToken: 'vltx_tok_1234567890abcdef1234567890abcdef',
+        orgId: 'org-1',
+        siteId: 'site-1',
+      });
+
+      // Target URL points to evil.com instead of legitimate.com
+      await expect(
+        fetcher.fetch('http://evil.com/.well-known/veltrix-challenge/vltx_tok_1234567890abcdef1234567890abcdef', {
+          context: trustedContext,
+        })
+      ).rejects.toThrow(/does not match registered primary domain 'legitimate\.com'/i);
+    });
+
+    it('SafeVerificationHttpFetcher rejects call without trusted context or configured domain/token', async () => {
+      const fetcher = new SafeVerificationHttpFetcher({ allowLoopbackForTesting: true });
+
+      await expect(
+        fetcher.fetch('http://target.com/.well-known/veltrix-challenge/token123')
+      ).rejects.toThrow(/SafeVerificationHttpFetcher requires trusted asset context/i);
+    });
+
+    it('rejects URLs with embedded user credentials (SSRF credential injection)', async () => {
+      const client = new SafeHttpClient();
+      const context = createAuthorizedScanScopeContext({
+        orgId: 'org-1',
+        scanId: 'scan-1',
+        siteId: 'site-1',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      });
+
+      await expect(
+        client.get('http://admin:secret@example.com/admin', { context })
+      ).rejects.toThrow(/Embedded user credentials in target URL/i);
+    });
+
+    it('rejects caller-supplied Host header that does not match validated target authority', async () => {
+      const client = new SafeHttpClient();
+      const context = createAuthorizedScanScopeContext({
+        orgId: 'org-1',
+        scanId: 'scan-1',
+        siteId: 'site-1',
+        primaryDomain: 'example.com',
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+      });
+
+      await expect(
+        client.get('http://example.com/test', {
+          headers: { Host: 'internal.corp.local' },
+          context,
+        })
+      ).rejects.toThrow(/Caller-supplied Host header .* does not match target URL authority/i);
+    });
+
+    it('strips hop-by-hop headers from outgoing requests', async () => {
+      let receivedHeaders: http.IncomingHttpHeaders | null = null;
+      const testServer = http.createServer((req, res) => {
+        receivedHeaders = req.headers;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+
+      await new Promise<void>((r) => testServer.listen(0, '127.0.0.1', r));
+      const port = (testServer.address() as net.AddressInfo).port;
+
+      try {
+        const client = new SafeHttpClient({
+          dnsResolver: new DnsResolver({
+            lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+            allowLoopbackForTesting: true,
+          }),
+          allowLoopbackForTesting: true,
+        });
+
+        const context = createAuthorizedScanScopeContext({
+          orgId: 'org-1',
+          scanId: 'scan-1',
+          siteId: 'site-1',
+          primaryDomain: 'primary.example.com',
+          status: 'VERIFIED',
+          scanBlocked: false,
+          expiresAt: Date.now() + 86400000,
+          allowedPorts: [port],
+        });
+
+        await client.get(`http://primary.example.com:${port}/header-strip-test`, {
+          allowLoopbackForTesting: true,
+          headers: {
+            'Connection': 'keep-alive',
+            'Proxy-Connection': 'keep-alive',
+            'Upgrade': 'websocket',
+            'X-Custom-Scan-Header': 'preserved-value',
+          },
+          context,
+        });
+
+        expect(receivedHeaders).not.toBeNull();
+        // Connection is strictly overridden to 'close'
+        expect(receivedHeaders!['connection']).toBe('close');
+        // Hop-by-hop headers are completely stripped
+        expect(receivedHeaders!['proxy-connection']).toBeUndefined();
+        expect(receivedHeaders!['upgrade']).toBeUndefined();
+        // Safe custom header is preserved
+        expect(receivedHeaders!['x-custom-scan-header']).toBe('preserved-value');
+      } finally {
+        await new Promise<void>((r) => testServer.close(() => r()));
+      }
+    });
+
+    it('aborts during streaming response body after headers have arrived', async () => {
+      let clientSocket: net.Socket | null = null;
+      const hangingStreamServer = http.createServer((req, res) => {
+        clientSocket = req.socket;
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.write('first-chunk-ok-');
+        // Do not end or write further to simulate hanging streaming body
+      });
+
+      await new Promise<void>((r) => hangingStreamServer.listen(0, '127.0.0.1', r));
+      const hangPort = (hangingStreamServer.address() as net.AddressInfo).port;
+
+      try {
+        const client = new SafeHttpClient({
+          dnsResolver: new DnsResolver({
+            lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+            allowLoopbackForTesting: true,
+          }),
+          allowLoopbackForTesting: true,
+        });
+
+        const context = createAuthorizedScanScopeContext({
+          orgId: 'org-1',
+          scanId: 'scan-1',
+          siteId: 'site-1',
+          primaryDomain: 'primary.example.com',
+          status: 'VERIFIED',
+          scanBlocked: false,
+          expiresAt: Date.now() + 86400000,
+          allowedPorts: [hangPort],
+        });
+
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 40);
+
+        await expect(
+          client.get(`http://primary.example.com:${hangPort}/stream-hang`, {
+            signal: controller.signal,
+            allowLoopbackForTesting: true,
+            context,
+          })
+        ).rejects.toThrow(/cancelled by.*AbortSignal/i);
+
+        await new Promise((r) => setTimeout(r, 20));
+        expect(clientSocket?.destroyed || !clientSocket?.writable).toBe(true);
+      } finally {
+        await new Promise<void>((r) => hangingStreamServer.close(() => r()));
+      }
+    });
+
+    it('enforces bodyIdleTimeoutMs watchdog when server stalls during body transmission', async () => {
+      let clientSocket: net.Socket | null = null;
+      const stallServer = http.createServer((req, res) => {
+        clientSocket = req.socket;
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.write('chunk-1-');
+        // Stall without closing
+      });
+
+      await new Promise<void>((r) => stallServer.listen(0, '127.0.0.1', r));
+      const stallPort = (stallServer.address() as net.AddressInfo).port;
+
+      try {
+        const client = new SafeHttpClient({
+          dnsResolver: new DnsResolver({
+            lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+            allowLoopbackForTesting: true,
+          }),
+          allowLoopbackForTesting: true,
+        });
+
+        const context = createAuthorizedScanScopeContext({
+          orgId: 'org-1',
+          scanId: 'scan-1',
+          siteId: 'site-1',
+          primaryDomain: 'primary.example.com',
+          status: 'VERIFIED',
+          scanBlocked: false,
+          expiresAt: Date.now() + 86400000,
+          allowedPorts: [stallPort],
+        });
+
+        await expect(
+          client.get(`http://primary.example.com:${stallPort}/stall-test`, {
+            bodyIdleTimeoutMs: 60,
+            timeoutMs: 5000,
+            allowLoopbackForTesting: true,
+            context,
+          })
+        ).rejects.toThrow(/Response body idle timeout/i);
+
+        await new Promise((r) => setTimeout(r, 20));
+        expect(clientSocket?.destroyed || !clientSocket?.writable).toBe(true);
+      } finally {
+        await new Promise<void>((r) => stallServer.close(() => r()));
+      }
+    });
+
+    it('enforces connectTimeoutMs watchdog on hung TCP / TLS connection', async () => {
+      const activeSockets: net.Socket[] = [];
+      const hungTlsServer = net.createServer((sock) => {
+        activeSockets.push(sock);
+      });
+
+      await new Promise<void>((r) => hungTlsServer.listen(0, '127.0.0.1', r));
+      const hungPort = (hungTlsServer.address() as net.AddressInfo).port;
+
+      try {
+        const client = new SafeHttpClient({
+          dnsResolver: new DnsResolver({
+            lookupFn: async () => [{ address: '127.0.0.1', family: 4 }],
+            allowLoopbackForTesting: true,
+          }),
+          allowLoopbackForTesting: true,
+        });
+
+        const context = createAuthorizedScanScopeContext({
+          orgId: 'org-1',
+          scanId: 'scan-1',
+          siteId: 'site-1',
+          primaryDomain: 'primary.example.com',
+          status: 'VERIFIED',
+          scanBlocked: false,
+          expiresAt: Date.now() + 86400000,
+          allowedPorts: [hungPort],
+        });
+
+        await expect(
+          client.get(`https://primary.example.com:${hungPort}/hung-tls`, {
+            connectTimeoutMs: 60,
+            timeoutMs: 5000,
+            allowLoopbackForTesting: true,
+            context,
+          })
+        ).rejects.toThrow(/TCP\/TLS connection timed out after 60ms/i);
+      } finally {
+        for (const sock of activeSockets) {
+          try { sock.destroy(); } catch {}
+        }
+        await new Promise<void>((r) => hungTlsServer.close(() => r()));
+      }
+    });
+  });
+
 });

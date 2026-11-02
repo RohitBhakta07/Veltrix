@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import {
   SafeHttpClient,
   DnsResolver,
-  type RequestAuthorizationContext,
+  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
 
 describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)', () => {
@@ -58,35 +58,38 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
       // 4. Decompression bomb with > 100:1 ratio (after 64 KB warm-up)
       if (url.pathname === '/ratio-bomb') {
         // Create repeating compressible stream
-        const largeZeros = Buffer.alloc(12 * 1024 * 1024, 0); // 12 MB zeros compresses to ~12 KB (ratio > 1000:1)
-        const compressed = zlib.gzipSync(largeZeros);
+        const largeZeros = Buffer.alloc(10 * 1024 * 1024, 0x42);
+        const compressedBomb = zlib.gzipSync(largeZeros, { level: 9 });
         res.writeHead(200, {
           'Content-Type': 'text/plain',
           'Content-Encoding': 'gzip',
+          'Content-Length': compressedBomb.length.toString(),
         });
-        res.end(compressed);
+        res.end(compressedBomb);
         return;
       }
 
-      // 5. Chunked encoding without Content-Length
+      // 5. Chunked stream without Content-Length
       if (url.pathname === '/chunked-stream') {
         res.writeHead(200, {
           'Content-Type': 'text/plain',
           'Transfer-Encoding': 'chunked',
         });
-        res.write('chunk-1-data-');
-        res.write('chunk-2-data-');
-        res.end('chunk-3-end');
+        res.write('part-1-');
+        setTimeout(() => {
+          res.write('part-2-');
+          res.end('final');
+        }, 10);
         return;
       }
 
-      // 6. Unsupported encoding (e.g. zstd)
-      if (url.pathname === '/unsupported-encoding') {
+      // 6. Unsupported compression algorithm (e.g. zstd)
+      if (url.pathname === '/unsupported-algo') {
         res.writeHead(200, {
-          'Content-Type': 'application/octet-stream',
+          'Content-Type': 'text/plain',
           'Content-Encoding': 'zstd',
         });
-        res.end(Buffer.from('zstd-data'));
+        res.end(Buffer.from('zstd-compressed-fake'));
         return;
       }
 
@@ -117,17 +120,18 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  const baseAuthorizedContext: RequestAuthorizationContext = {
-    purpose: 'AUTHORIZED_SCAN',
-    orgId: 'org-enterprise-01',
-    scanId: 'scan-001',
-    siteId: 'site-001',
-    primaryDomain: 'primary.example.com',
-    approvedSubdomains: [],
-    status: 'VERIFIED',
-    scanBlocked: false,
-    expiresAt: Date.now() + 86400000,
-  };
+  const getContext = () =>
+    createAuthorizedScanScopeContext({
+      orgId: 'org-enterprise-01',
+      scanId: 'scan-001',
+      siteId: 'site-001',
+      primaryDomain: 'primary.example.com',
+      approvedSubdomains: [],
+      status: 'VERIFIED',
+      scanBlocked: false,
+      expiresAt: Date.now() + 86400000,
+      allowedPorts: [serverPort],
+    });
 
   const createTestClient = () => {
     return new SafeHttpClient({
@@ -143,16 +147,12 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/uncompressed-5mb`, {
       allowLoopbackForTesting: true,
-      context: {
-        ...baseAuthorizedContext,
-        allowedPorts: [serverPort],
-      },
+      context: getContext(),
     });
 
     expect(res.status).toBe(200);
-    expect(res.decompressedBytes).toBe(5 * 1024 * 1024);
-    expect(res.wireBytesReceived).toBe(5 * 1024 * 1024);
-    expect(res.rawBody.length).toBe(5 * 1024 * 1024);
+    expect(res.rawBuffer.length).toBe(5 * 1024 * 1024);
+    expect(res.text.length).toBe(5 * 1024 * 1024);
   });
 
   it('rejects compressed responses exceeding 2 MB raw wire data ceiling', async () => {
@@ -160,12 +160,9 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/compressed-wire-overflow`, {
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getContext(),
       })
-    ).rejects.toThrow(/exceeds maximum wire limit|exceeded maximum limit/i);
+    ).rejects.toThrow(/exceeds maximum wire limit|exceeded maximum compressed wire limit/i);
   });
 
   it('destroys stream and socket when decompressed body exceeds 10 MB ceiling without worker crash', async () => {
@@ -175,16 +172,14 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/decompressed-overflow`, {
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getContext(),
       })
     ).rejects.toThrow(/Decompression bomb detected|exceeded maximum limit of 10485760 bytes/i);
 
-    const memDeltaMb = (process.memoryUsage().heapUsed - memBefore) / (1024 * 1024);
-    // Verifies bounded memory footprint (< 100 MB delta)
-    expect(memDeltaMb).toBeLessThan(100);
+    // Assert heap did not blow up proportionally to the 15 MB decompressed payload
+    const memAfter = process.memoryUsage().heapUsed;
+    const diffMb = (memAfter - memBefore) / (1024 * 1024);
+    expect(diffMb).toBeLessThan(15);
   });
 
   it('detects decompression bomb exceeding 100:1 expansion ratio after 64 KB warm-up', async () => {
@@ -192,10 +187,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/ratio-bomb`, {
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getContext(),
       })
     ).rejects.toThrow(/Decompression bomb detected: Expansion ratio exceeded 100:1/i);
   });
@@ -204,25 +196,19 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     const client = createTestClient();
     const res = await client.get(`http://primary.example.com:${serverPort}/chunked-stream`, {
       allowLoopbackForTesting: true,
-      context: {
-        ...baseAuthorizedContext,
-        allowedPorts: [serverPort],
-      },
+      context: getContext(),
     });
 
     expect(res.status).toBe(200);
-    expect(res.text).toBe('chunk-1-data-chunk-2-data-chunk-3-end');
+    expect(res.text).toBe('part-1-part-2-final');
   });
 
   it('fails closed safely on unsupported compression algorithm (zstd) without crashing', async () => {
     const client = createTestClient();
     await expect(
-      client.get(`http://primary.example.com:${serverPort}/unsupported-encoding`, {
+      client.get(`http://primary.example.com:${serverPort}/unsupported-algo`, {
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getContext(),
       })
     ).rejects.toThrow(/Unsupported or unhandled content-encoding: 'zstd'/i);
   });
@@ -232,10 +218,7 @@ describe('Phase 8: Decompression Bomb & Multi-Layer Resource Ceilings (TASK-802)
     await expect(
       client.get(`http://primary.example.com:${serverPort}/malformed-gzip`, {
         allowLoopbackForTesting: true,
-        context: {
-          ...baseAuthorizedContext,
-          allowedPorts: [serverPort],
-        },
+        context: getContext(),
       })
     ).rejects.toThrow(/Decompression error for 'gzip' payload/i);
   });

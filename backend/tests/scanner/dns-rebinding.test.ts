@@ -3,7 +3,7 @@ import net from 'node:net';
 import {
   SafeHttpClient,
   DnsResolver,
-  type RequestAuthorizationContext,
+  createAuthorizedScanScopeContext,
 } from '../../src/scanner/transport/index.js';
 
 describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
@@ -48,8 +48,7 @@ describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
       socketConnector: mockConnector,
     });
 
-    const context: RequestAuthorizationContext = {
-      purpose: 'AUTHORIZED_SCAN',
+    const context = createAuthorizedScanScopeContext({
       orgId: 'org-enterprise-01',
       scanId: 'scan-001',
       siteId: 'site-001',
@@ -58,7 +57,7 @@ describe('Phase 8: DNS Rebinding Mitigation Harness (TASK-802)', () => {
       status: 'VERIFIED',
       scanBlocked: false,
       expiresAt: Date.now() + 86400000,
-    };
+    });
 
     // Request is dispatched
     await expect(
