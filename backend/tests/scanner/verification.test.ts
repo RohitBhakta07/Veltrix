@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import tls from 'node:tls';
 import { createApp } from '../../src/app.js';
 import { MemoryStore } from '../../src/storage/memory-store.js';
 import { resetStorageForTesting } from '../../src/storage/index.js';
@@ -14,7 +18,12 @@ import {
   isProhibitedIpv4,
 } from '../../src/scanner/verification/verifier.js';
 import { DnsVerifier } from '../../src/scanner/verification/dns-verifier.js';
-import { HttpVerifier } from '../../src/scanner/verification/http-verifier.js';
+import {
+  HttpVerifier,
+  DefaultHttpFetcher,
+  type AddressResolverInterface,
+  type SocketConnectorInterface,
+} from '../../src/scanner/verification/http-verifier.js';
 import { MetaVerifier } from '../../src/scanner/verification/meta-verifier.js';
 import type { WebsiteAsset } from '@veltrix/shared';
 
@@ -32,6 +41,84 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
   // Mock storage for DNS & HTTP fetchers
   const mockDnsRecords = new Map<string, string[][]>();
   const mockHttpResponses = new Map<string, { status: number; data?: unknown; text?: string }>();
+
+  let testHttpServer: http.Server;
+  let testHttpsServer: https.Server;
+  let testHttpPort: number;
+  let testHttpsPort: number;
+
+  const TEST_PFX_BASE64 =
+    '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';
+
+  beforeAll(async () => {
+    // Start local HTTP server
+    testHttpServer = http.createServer((req, res) => {
+      if (req.url === '/redirect') {
+        res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data' });
+        res.end();
+        return;
+      }
+      if (req.url === '/redirect-local') {
+        res.writeHead(301, { Location: 'http://127.0.0.1/admin' });
+        res.end();
+        return;
+      }
+      if (req.url === '/oversized-header') {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': '200000',
+        });
+        res.end('{}');
+        return;
+      }
+      if (req.url === '/oversized-body') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('A'.repeat(150 * 1024));
+        return;
+      }
+      if (req.url === '/slow') {
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ slow: true }));
+        }, 1500);
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ veltrixChallengeToken: 'test-tok', orgId: 'test-org' }));
+    });
+
+    await new Promise<void>((resolve) => {
+      testHttpServer.listen(0, '127.0.0.1', () => {
+        testHttpPort = (testHttpServer.address() as net.AddressInfo).port;
+        resolve();
+      });
+    });
+
+    // Start local HTTPS server with self-signed test cert for test.veltrix.local
+    testHttpsServer = https.createServer(
+      {
+        pfx: Buffer.from(TEST_PFX_BASE64, 'base64'),
+        passphrase: 'veltrix',
+      },
+      (_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ secure: true }));
+      }
+    );
+
+    await new Promise<void>((resolve) => {
+      testHttpsServer.listen(0, '127.0.0.1', () => {
+        testHttpsPort = (testHttpsServer.address() as net.AddressInfo).port;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => testHttpServer.close(() => resolve()));
+    await new Promise<void>((resolve) => testHttpsServer.close(() => resolve()));
+  });
 
   const testDnsResolver: DnsResolverInterface = {
     async resolveTxt(host: string): Promise<string[][]> {
@@ -662,6 +749,386 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
         .set('Authorization', `Bearer ${orgAdminTokenB}`)
         .send({ method: 'DNS_TXT' });
       expect(resB.status).toBe(404);
+    });
+  });
+
+  describe('8. DefaultHttpFetcher Connection-Level IP Pinning & SSRF Remediation (PR #15 Security Remediation)', () => {
+    it('confirms the actual socket connects only to the validated pinned IP', async () => {
+      let connectedHost = '';
+      let connectedPort = 0;
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          connectedHost = options.host;
+          connectedPort = options.port;
+          return net.connect({ host: '127.0.0.1', port: testHttpPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const safeResolver: AddressResolverInterface = {
+        async lookup() {
+          return [{ address: '104.20.23.154', family: 4 }];
+        },
+      };
+
+      let onSocketRemote = '';
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: safeResolver,
+        socketConnector: mockConnector,
+        onSocketConnected(info) {
+          onSocketRemote = info.remoteAddress;
+        },
+      });
+
+      const res = await fetcher.fetch('http://verified.domain.com/test');
+      expect(res.status).toBe(200);
+      expect(connectedHost).toBe('104.20.23.154');
+      expect(connectedPort).toBe(80);
+      expect(onSocketRemote).toBe('127.0.0.1');
+      expect(res.remoteAddress).toBe('127.0.0.1');
+    });
+
+    it('prevents DNS rebinding: pins validated safe IP and never connects to rebound private IP', async () => {
+      let lookupCount = 0;
+      const rebindResolver: AddressResolverInterface = {
+        async lookup(hostname: string) {
+          lookupCount++;
+          if (lookupCount === 1) {
+            // First lookup during validation returns a valid public IP
+            return [{ address: '93.184.216.34', family: 4 }];
+          }
+          // Subsequent lookup returns malicious internal cloud metadata IP
+          return [{ address: '169.254.169.254', family: 4 }];
+        },
+      };
+
+      let connectedHost = '';
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          connectedHost = options.host;
+          return net.connect({ host: '127.0.0.1', port: testHttpPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: rebindResolver,
+        socketConnector: mockConnector,
+      });
+
+      const res = await fetcher.fetch('http://rebind.attacker.org/test');
+      expect(res.status).toBe(200);
+
+      // Invariant: The connection MUST connect only to the validated pinned IP (93.184.216.34)
+      expect(connectedHost).toBe('93.184.216.34');
+      expect(connectedHost).not.toBe('169.254.169.254');
+    });
+
+    it('rejects destination if any resolved address is prohibited (fails closed on multi-IP resolution)', async () => {
+      const multiResolver: AddressResolverInterface = {
+        async lookup() {
+          return [
+            { address: '93.184.216.34', family: 4 }, // Safe public IP
+            { address: '10.0.0.1', family: 4 },       // Prohibited RFC 1918 address
+          ];
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({ addressResolver: multiResolver });
+
+      await expect(fetcher.fetch('http://multi-ip.attacker.org/test')).rejects.toThrow(
+        "SSRF blocked: Host 'multi-ip.attacker.org' resolved to prohibited IP address '10.0.0.1'."
+      );
+    });
+
+    it('fails closed when DNS resolution returns an empty address list', async () => {
+      const emptyResolver: AddressResolverInterface = {
+        async lookup() {
+          return [];
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({ addressResolver: emptyResolver });
+
+      await expect(fetcher.fetch('http://empty.attacker.org/test')).rejects.toThrow(
+        "DNS resolution returned no addresses for verification target 'empty.attacker.org'."
+      );
+    });
+
+    it('fails closed on DNS timeout in both development and production', async () => {
+      const timeoutResolver: AddressResolverInterface = {
+        async lookup() {
+          await new Promise((r) => setTimeout(r, 100));
+          throw new Error('ETIMEDOUT: DNS query timed out');
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({ addressResolver: timeoutResolver });
+
+      // Development / test environment
+      await expect(fetcher.fetch('http://timeout.attacker.org/test', { timeoutMs: 50 })).rejects.toThrow(
+        "DNS resolution failed for verification target 'timeout.attacker.org'"
+      );
+
+      // Production environment
+      const origEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        await expect(fetcher.fetch('http://timeout.attacker.org/test', { timeoutMs: 50 })).rejects.toThrow(
+          "DNS resolution failed for verification target 'timeout.attacker.org'"
+        );
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('fails closed on DNS resolver failure in both development and production', async () => {
+      const notFoundResolver: AddressResolverInterface = {
+        async lookup() {
+          const err = new Error('getaddrinfo ENOTFOUND nonexistent.domain');
+          (err as any).code = 'ENOTFOUND';
+          throw err;
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({ addressResolver: notFoundResolver });
+
+      // Test environment
+      await expect(fetcher.fetch('http://nonexistent.domain/test')).rejects.toThrow(
+        "DNS resolution failed for verification target 'nonexistent.domain'"
+      );
+
+      // Production environment
+      const origEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        await expect(fetcher.fetch('http://nonexistent.domain/test')).rejects.toThrow(
+          "DNS resolution failed for verification target 'nonexistent.domain'"
+        );
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('strictly blocks all prohibited IPv4 and IPv6 destinations (literal hostnames and resolved addresses)', async () => {
+      const fetcher = new DefaultHttpFetcher();
+
+      const prohibitedTargets = [
+        // IPv4 loopback & unusual numeric forms
+        'http://127.0.0.1/test',
+        'http://127.1/test',
+        'http://0177.0.0.1/test',
+        'http://0x7f.0.0.1/test',
+        'http://2130706433/test',
+        'http://0x7f000001/test',
+        // RFC 1918
+        'http://10.0.0.1/test',
+        'http://172.16.0.1/test',
+        'http://192.168.1.1/test',
+        // Cloud Metadata & CGNAT
+        'http://169.254.169.254/latest/meta-data',
+        'http://100.64.0.1/test',
+        // IPv6
+        'http://[::1]/test',
+        'http://[::]/test',
+        'http://[fe80::1]/test',
+        'http://[fc00::1]/test',
+        'http://[fd00:ec2::254]/latest/meta-data',
+        'http://[::ffff:127.0.0.1]/test',
+        'http://[::ffff:169.254.169.254]/test',
+        // Prohibited literal hosts
+        'http://localhost/test',
+        'http://internal-service.local/test',
+        'http://metadata.google.internal/test',
+      ];
+
+      for (const target of prohibitedTargets) {
+        await expect(fetcher.fetch(target)).rejects.toThrow(/SSRF blocked/);
+      }
+    });
+
+    it('enforces TLS SNI and rejects untrusted / self-signed certificates with rejectUnauthorized: true', async () => {
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          return net.connect({ host: '127.0.0.1', port: testHttpsPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const safeResolver: AddressResolverInterface = {
+        async lookup() {
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: safeResolver,
+        socketConnector: mockConnector,
+      });
+
+      // Self-signed certificate must fail verification closed
+      await expect(fetcher.fetch('https://test.veltrix.org/test')).rejects.toThrow(
+        /self-signed certificate/i
+      );
+    });
+
+    it('strictly blocks HTTP redirect attempts to internal destinations without making follow-up connections', async () => {
+      const safeResolver: AddressResolverInterface = {
+        async lookup() {
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      };
+
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          return net.connect({ host: '127.0.0.1', port: testHttpPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: safeResolver,
+        socketConnector: mockConnector,
+      });
+
+      // Redirect to AWS IMDS
+      await expect(fetcher.fetch('http://safe.example.com/redirect')).rejects.toThrow(
+        "HTTP redirect to 'http://169.254.169.254/latest/meta-data' blocked. Redirects are disabled for domain verification."
+      );
+
+      // Redirect to localhost
+      await expect(fetcher.fetch('http://safe.example.com/redirect-local')).rejects.toThrow(
+        "HTTP redirect to 'http://127.0.0.1/admin' blocked. Redirects are disabled for domain verification."
+      );
+    });
+
+    it('ambient HTTP_PROXY and HTTPS_PROXY environment variables cannot bypass pinned connection', async () => {
+      const origHttpProxy = process.env.HTTP_PROXY;
+      const origHttpsProxy = process.env.HTTPS_PROXY;
+
+      try {
+        process.env.HTTP_PROXY = 'http://127.0.0.1:9999';
+        process.env.HTTPS_PROXY = 'http://127.0.0.1:9999';
+
+        let connectedHost = '';
+        let connectedPort = 0;
+        const mockConnector: SocketConnectorInterface = {
+          connect(options) {
+            connectedHost = options.host;
+            connectedPort = options.port;
+            return net.connect({ host: '127.0.0.1', port: testHttpPort });
+          },
+          connectTls(options) {
+            return tls.connect(options);
+          },
+        };
+
+        const safeResolver: AddressResolverInterface = {
+          async lookup() {
+            return [{ address: '93.184.216.34', family: 4 }];
+          },
+        };
+
+        const fetcher = new DefaultHttpFetcher({
+          addressResolver: safeResolver,
+          socketConnector: mockConnector,
+        });
+
+        const res = await fetcher.fetch('http://safe.example.com/test');
+        expect(res.status).toBe(200);
+
+        // Confirm connection was made directly to pinned IP (93.184.216.34:80), NOT to proxy port 9999
+        expect(connectedHost).toBe('93.184.216.34');
+        expect(connectedPort).toBe(80);
+        expect(connectedPort).not.toBe(9999);
+      } finally {
+        if (origHttpProxy === undefined) delete process.env.HTTP_PROXY;
+        else process.env.HTTP_PROXY = origHttpProxy;
+        if (origHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
+        else process.env.HTTPS_PROXY = origHttpsProxy;
+      }
+    });
+
+    it('rejects responses exceeding 128KB limit via Content-Length or streaming data', async () => {
+      const safeResolver: AddressResolverInterface = {
+        async lookup() {
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      };
+
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          return net.connect({ host: '127.0.0.1', port: testHttpPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: safeResolver,
+        socketConnector: mockConnector,
+      });
+
+      // 1. Content-Length header > 128KB
+      await expect(fetcher.fetch('http://safe.example.com/oversized-header')).rejects.toThrow(
+        "Verification response exceeded maximum allowed size of 128KB (200000 bytes)."
+      );
+
+      // 2. Stream chunk accumulation > 128KB
+      await expect(fetcher.fetch('http://safe.example.com/oversized-body')).rejects.toThrow(
+        "Verification response exceeded maximum allowed size of 128KB."
+      );
+    });
+
+    it('strictly aborts requests exceeding configured timeout', async () => {
+      const safeResolver: AddressResolverInterface = {
+        async lookup() {
+          return [{ address: '93.184.216.34', family: 4 }];
+        },
+      };
+
+      const mockConnector: SocketConnectorInterface = {
+        connect(options) {
+          return net.connect({ host: '127.0.0.1', port: testHttpPort });
+        },
+        connectTls(options) {
+          return tls.connect(options);
+        },
+      };
+
+      const fetcher = new DefaultHttpFetcher({
+        addressResolver: safeResolver,
+        socketConnector: mockConnector,
+      });
+
+      await expect(fetcher.fetch('http://safe.example.com/slow', { timeoutMs: 100 })).rejects.toThrow(
+        "Verification request timed out after 100ms."
+      );
+    });
+
+    it('throws FATAL_SECURITY_ERROR when custom socket connector is passed in production', () => {
+      const origEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const dummyConnector: SocketConnectorInterface = {
+          connect: () => ({} as any),
+          connectTls: () => ({} as any),
+        };
+        expect(() => new DefaultHttpFetcher({ socketConnector: dummyConnector })).toThrow(
+          'FATAL_SECURITY_ERROR: Custom socket connectors are prohibited in production.'
+        );
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
     });
   });
 });
