@@ -4,7 +4,6 @@ import type { StorageInterface } from '../../storage/storage-interface.js';
 import { DnsVerifier, type DnsResolverInterface, DefaultDnsResolver } from './dns-verifier.js';
 import { HttpVerifier, type HttpFetcherInterface, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
 import { MetaVerifier } from './meta-verifier.js';
-import { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
 import { createAuthoritativeVerificationScopeContext } from '../transport/context-authority.js';
 
 export { isProhibitedIp, isProhibitedIpv4 };
@@ -63,6 +62,8 @@ export class DomainOwnershipVerifier {
     } else if (dnsResolverOrOptions && typeof dnsResolverOrOptions === 'object') {
       resolver = dnsResolverOrOptions.dnsResolver;
       fetcher = dnsResolverOrOptions.httpFetcher || httpFetcherArg;
+    } else {
+      fetcher = httpFetcherArg;
     }
 
     if (process.env.NODE_ENV === 'production') {
@@ -74,10 +75,9 @@ export class DomainOwnershipVerifier {
       }
     }
 
-    this.dnsVerifier = new DnsVerifier(resolver || new DefaultDnsResolver());
-    const finalFetcher = fetcher || new SafeVerificationHttpFetcher();
-    this.httpVerifier = new HttpVerifier(finalFetcher);
-    this.metaVerifier = new MetaVerifier(finalFetcher);
+    this.dnsVerifier = resolver ? new DnsVerifier(resolver) : new DnsVerifier(new DefaultDnsResolver());
+    this.httpVerifier = fetcher ? new HttpVerifier(fetcher) : new HttpVerifier();
+    this.metaVerifier = fetcher ? new MetaVerifier(fetcher) : new MetaVerifier();
   }
 
   /**

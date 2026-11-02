@@ -13,17 +13,11 @@ import {
   type AuthorizedScanScopeContext,
   SafeTransportError,
   isTrustedScopeContext,
+  BLOCKED_INTERNAL_PORTS,
+  isBlockedInternalPort,
 } from './types.js';
 
-/**
- * Categorically barred internal service ports that can NEVER be accessed by scanner requests,
- * even if explicitly requested in an asset port allowlist.
- */
-export const BLOCKED_INTERNAL_PORTS = new Set<number>([
-  20, 21, 22, 23, 25, 53, 69, 110, 111, 135, 137, 138, 139, 143, 389, 445, 636,
-  1433, 1434, 1521, 2049, 2375, 2376, 2379, 2380, 3306, 3389, 5000, 5432, 5900,
-  6379, 8500, 9000, 9200, 9300, 11211, 27017, 27018, 28017,
-]);
+export { BLOCKED_INTERNAL_PORTS, isBlockedInternalPort };
 
 export interface ScopeValidationResult {
   allowed: boolean;

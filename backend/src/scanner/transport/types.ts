@@ -83,28 +83,79 @@ export type RequestAuthorizationContext =
 export { isTrustedScopeContext } from './context-authority.js';
 
 /**
- * Standard RFC 7230 / RFC 9110 hop-by-hop headers that must never be forwarded
- * or accepted from external caller configurations.
+ * Module-private set of standard RFC 7230 / RFC 9110 hop-by-hop headers
+ * that must never be forwarded or accepted from external caller configurations.
+ * Strictly non-exported to prevent runtime tampering with Set entries.
  */
-export const RESTRICTED_HOP_BY_HOP_HEADERS: ReadonlySet<string> = Object.freeze(
-  new Set([
-    'host',
-    ':authority',
-    ':method',
-    ':path',
-    ':scheme',
-    ':status',
-    'connection',
-    'keep-alive',
-    'proxy-authenticate',
-    'proxy-authorization',
-    'proxy-connection',
-    'te',
-    'trailer',
-    'transfer-encoding',
-    'upgrade',
-  ])
-);
+const RESTRICTED_HOP_BY_HOP_HEADERS_SET: ReadonlySet<string> = new Set([
+  'host',
+  ':authority',
+  ':method',
+  ':path',
+  ':scheme',
+  ':status',
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+/**
+ * Validates whether a header name is a restricted hop-by-hop or pseudo-header.
+ * Case-insensitive. Protects underlying policy collection from external mutation.
+ */
+export function isRestrictedHopByHopHeader(name: string): boolean {
+  if (typeof name !== 'string') return false;
+  return RESTRICTED_HOP_BY_HOP_HEADERS_SET.has(name.trim().toLowerCase());
+}
+
+/**
+ * Categorically barred internal service ports that can NEVER be accessed by scanner requests,
+ * even if explicitly requested in an asset port allowlist.
+ */
+const BLOCKED_INTERNAL_PORTS_SET = new Set<number>([
+  20, 21, 22, 23, 25, 53, 69, 110, 111, 135, 137, 138, 139, 143, 389, 445, 636,
+  1433, 1434, 1521, 2049, 2375, 2376, 2379, 2380, 3306, 3389, 5000, 5432, 5900,
+  6379, 8500, 9000, 9200, 9300, 11211, 27017, 27018, 28017,
+]);
+
+/**
+ * Validates whether a port is a prohibited internal infrastructure port.
+ */
+export function isBlockedInternalPort(port: number): boolean {
+  return typeof port === 'number' && BLOCKED_INTERNAL_PORTS_SET.has(port);
+}
+
+/**
+ * Genuinely immutable read-only view of blocked internal ports.
+ * Mutating operations (add, delete, clear) throw TypeError.
+ */
+export const BLOCKED_INTERNAL_PORTS: ReadonlySet<number> = Object.freeze({
+  has: (port: number) => isBlockedInternalPort(port),
+  get size() {
+    return BLOCKED_INTERNAL_PORTS_SET.size;
+  },
+  [Symbol.iterator]: () => BLOCKED_INTERNAL_PORTS_SET[Symbol.iterator](),
+  entries: () => BLOCKED_INTERNAL_PORTS_SET.entries(),
+  keys: () => BLOCKED_INTERNAL_PORTS_SET.keys(),
+  values: () => BLOCKED_INTERNAL_PORTS_SET.values(),
+  forEach: (cb: (value: number, value2: number, set: ReadonlySet<number>) => void, thisArg?: unknown) =>
+    BLOCKED_INTERNAL_PORTS_SET.forEach((v) => cb.call(thisArg, v, v, BLOCKED_INTERNAL_PORTS)),
+  add: () => {
+    throw new TypeError('BLOCKED_INTERNAL_PORTS is immutable');
+  },
+  delete: () => {
+    throw new TypeError('BLOCKED_INTERNAL_PORTS is immutable');
+  },
+  clear: () => {
+    throw new TypeError('BLOCKED_INTERNAL_PORTS is immutable');
+  },
+}) as unknown as ReadonlySet<number>;
 
 export interface DnsRecord {
   address: string;

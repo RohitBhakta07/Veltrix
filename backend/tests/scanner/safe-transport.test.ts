@@ -11,6 +11,8 @@ import {
   SafeTransportError,
   isProhibitedIp,
   BLOCKED_INTERNAL_PORTS,
+  isBlockedInternalPort,
+  isRestrictedHopByHopHeader,
   type RequestAuthorizationContext,
   SafeVerificationHttpFetcher,
 } from '../../src/scanner/transport/index.js';
@@ -18,7 +20,10 @@ import {
   createAuthoritativeScanScopeContext,
   createAuthoritativeVerificationScopeContext,
   isTrustedScopeContext,
+  SERVER_CONTROLLED_ALLOWED_METHODS,
+  SERVER_MANDATORY_EXCLUDED_PATHS,
 } from '../../src/scanner/transport/context-authority.js';
+import { DefaultDnsResolver } from '../../src/scanner/verification/dns-verifier.js';
 import {
   createAuthorizedScanScopeContext,
   createVerificationScopeContext,
@@ -1024,7 +1029,7 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
 
     const validScanDesc = {
       scanId: 'scan-alpha-999',
-      allowedPorts: [localHttpPort],
+      allowedPorts: [80, 443],
       allowedMethods: ['GET', 'POST'],
     };
 
@@ -1358,9 +1363,15 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         expect(result.allowed).toBe(true);
       });
 
-      it('strictly blocks high-risk internal infrastructure port 22 even if included in allowedPorts', async () => {
+      it('strictly blocks high-risk internal infrastructure port 22 even if requested in allowedPorts', async () => {
+        // 1. Context authority rejects port 22 at context-minting time
+        await expect(getScanContextWithPorts([22])).rejects.toThrow(
+          /Port 22 is a prohibited internal infrastructure port/i
+        );
+
+        // 2. ScopeGuard also unconditionally blocks port 22 in target URL as defense-in-depth
         const url = new URL('http://primary.example.com:22/ssh-test');
-        const ctx = await getScanContextWithPorts([22]);
+        const ctx = await getScanContextWithPorts();
         expect(() =>
           AuthorizedScanScopeGuard.validate(url, 'GET', ctx)
         ).toThrow(/prohibited internal infrastructure port/i);
@@ -1519,44 +1530,382 @@ describe('Phase 8: Hardened Safe HTTP Transport Layer (TASK-802)', () => {
         expect(res.status).toBe(200);
       });
 
-      it('strictly prohibits injected dependencies in production across verifiers and fetchers', () => {
+      it('succeeds in constructing DomainOwnershipVerifier, HttpVerifier, and MetaVerifier in production mode with default compositions', () => {
         const prevEnv = process.env.NODE_ENV;
         try {
           process.env.NODE_ENV = 'production';
           const store = new MemoryStore();
 
-          // 1. SafeVerificationHttpFetcher
-          expect(
-            () => new SafeVerificationHttpFetcher({ client: new SafeHttpClient() })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
+          // 1. DomainOwnershipVerifier succeeds with default composition in production
+          const verifier = new DomainOwnershipVerifier(store);
+          expect(verifier).toBeInstanceOf(DomainOwnershipVerifier);
 
-          expect(
-            () => new SafeVerificationHttpFetcher({ allowLoopbackForTesting: true })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
+          // 2. HttpVerifier succeeds with default composition in production
+          const httpVerifier = new HttpVerifier();
+          expect(httpVerifier).toBeInstanceOf(HttpVerifier);
 
-          // 2. DomainOwnershipVerifier
-          const dummyResolver = new DnsResolver();
-          expect(
-            () => new DomainOwnershipVerifier(store, { resolver: dummyResolver })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
+          // 3. MetaVerifier succeeds with default composition in production
+          const metaVerifier = new MetaVerifier();
+          expect(metaVerifier).toBeInstanceOf(MetaVerifier);
 
-          const dummyFetcher = new SafeVerificationHttpFetcher();
-          expect(
-            () => new DomainOwnershipVerifier(store, { fetcher: dummyFetcher })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
-
-          // 3. HttpVerifier
-          expect(
-            () => new HttpVerifier({ fetcher: dummyFetcher })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
-
-          // 4. MetaVerifier
-          expect(
-            () => new MetaVerifier({ fetcher: dummyFetcher })
-          ).toThrow(/FATAL_SECURITY_ERROR/i);
+          // 4. SafeVerificationHttpFetcher succeeds with default composition in production
+          const fetcher = new SafeVerificationHttpFetcher();
+          expect(fetcher).toBeInstanceOf(SafeVerificationHttpFetcher);
         } finally {
           process.env.NODE_ENV = prevEnv;
         }
+      });
+
+      it('strictly prohibits injected dependencies in production across DomainOwnershipVerifier, HttpVerifier, and MetaVerifier', () => {
+        const prevEnv = process.env.NODE_ENV;
+        try {
+          process.env.NODE_ENV = 'production';
+          const store = new MemoryStore();
+          const dummyResolver = new DefaultDnsResolver();
+          const dummyFetcher = new SafeVerificationHttpFetcher();
+
+          // 1. DomainOwnershipVerifier with custom DNS resolver via options object
+          expect(
+            () => new DomainOwnershipVerifier(store, { dnsResolver: dummyResolver })
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected DnsResolver is prohibited in production/i);
+
+          // 2. DomainOwnershipVerifier with custom DNS resolver via positional argument
+          expect(
+            () => new DomainOwnershipVerifier(store, dummyResolver)
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected DnsResolver is prohibited in production/i);
+
+          // 3. DomainOwnershipVerifier with custom HTTP fetcher via actual httpFetcher option
+          expect(
+            () => new DomainOwnershipVerifier(store, { httpFetcher: dummyFetcher })
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production/i);
+
+          // 4. DomainOwnershipVerifier with custom HTTP fetcher via positional argument
+          expect(
+            () => new DomainOwnershipVerifier(store, undefined, dummyFetcher)
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production/i);
+
+          // 5. HttpVerifier with directly injected custom fetcher
+          expect(
+            () => new HttpVerifier(dummyFetcher)
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production/i);
+
+          // 6. MetaVerifier with directly injected custom fetcher
+          expect(
+            () => new MetaVerifier(dummyFetcher)
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production/i);
+
+          // 7. SafeVerificationHttpFetcher with injected client or loopback flag
+          expect(
+            () => new SafeVerificationHttpFetcher({ client: new SafeHttpClient() })
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected SafeHttpClient and test loopback options are prohibited in production/i);
+
+          expect(
+            () => new SafeVerificationHttpFetcher({ allowLoopbackForTesting: true })
+          ).toThrow(/FATAL_SECURITY_ERROR: Injected SafeHttpClient and test loopback options are prohibited in production/i);
+        } finally {
+          process.env.NODE_ENV = prevEnv;
+        }
+      });
+
+      it('proves default production verification uses hardened SafeHttpClient and requires authoritative storage context', async () => {
+        const httpVerifier = new HttpVerifier();
+        const metaVerifier = new MetaVerifier();
+
+        // 1. Calling verify without context fails because underlying SafeVerificationHttpFetcher rejects missing context
+        const httpResNoContext = await httpVerifier.verify(
+          'http://primary.example.com/.well-known/veltrix-challenge/token123',
+          'token123',
+          'org-1'
+        );
+        expect(httpResNoContext.matched).toBe(false);
+        expect(httpResNoContext.failureReason).toMatch(
+          /SafeVerificationHttpFetcher requires a pre-validated authoritative VerificationScopeContext/i
+        );
+
+        const metaResNoContext = await metaVerifier.verify('https://primary.example.com/', 'token123');
+        expect(metaResNoContext.matched).toBe(false);
+        expect(metaResNoContext.failureReason).toMatch(
+          /SafeVerificationHttpFetcher requires a pre-validated authoritative VerificationScopeContext/i
+        );
+
+        // 2. Calling verify with forged context fails because underlying SafeVerificationHttpFetcher rejects untrusted context
+        const forgedContext = {
+          purpose: 'DOMAIN_OWNERSHIP_VERIFICATION',
+          primaryDomain: 'primary.example.com',
+          activeToken: 'token123',
+        } as any;
+
+        const httpResForged = await httpVerifier.verify(
+          'http://primary.example.com/.well-known/veltrix-challenge/token123',
+          'token123',
+          'org-1',
+          forgedContext
+        );
+        expect(httpResForged.matched).toBe(false);
+        expect(httpResForged.failureReason).toMatch(
+          /Untrusted or forged request authorization context rejected/i
+        );
+
+        const metaResForged = await metaVerifier.verify('https://primary.example.com/', 'token123', forgedContext);
+        expect(metaResForged.matched).toBe(false);
+        expect(metaResForged.failureReason).toMatch(
+          /Untrusted or forged request authorization context rejected/i
+        );
+
+        // 3. Verification succeeds when supplied with genuine authoritative context from storage
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+        const trustedContext = await createAuthoritativeVerificationScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+        });
+        expect(isTrustedScopeContext(trustedContext)).toBe(true);
+      });
+    });
+
+    describe('P1: Server-Controlled Scan Authorization Policy & Invariant Matrix', () => {
+      it('defaults allowedMethods to GET and HEAD and deeply freezes the policy array', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        const context = await createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: 'scan-policy-default',
+        });
+
+        expect(context.allowedMethods).toEqual(['GET', 'HEAD']);
+        expect(Object.isFrozen(context.allowedMethods)).toBe(true);
+        expect(Object.isFrozen(context)).toBe(true);
+
+        // Mutating throws or is barred
+        expect(() => {
+          (context.allowedMethods as string[]).push('POST');
+        }).toThrow();
+      });
+
+      it('strictly validates caller-requested methods against server-controlled policy and rejects prohibited verbs', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        // TRACE method is prohibited
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-methods-trace',
+            allowedMethods: ['GET', 'TRACE'],
+          })
+        ).rejects.toThrow(/HTTP method 'TRACE' is prohibited by server-side scan policy/i);
+
+        // CONNECT method is prohibited
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-methods-connect',
+            allowedMethods: ['CONNECT'],
+          })
+        ).rejects.toThrow(/HTTP method 'CONNECT' is prohibited by server-side scan policy/i);
+
+        // Arbitrary unknown method is prohibited
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-methods-invalid',
+            allowedMethods: ['EVIL_VERB'],
+          })
+        ).rejects.toThrow(/HTTP method 'EVIL_VERB' is prohibited by server-side scan policy/i);
+
+        // Permitted methods are allowed, normalized to uppercase, deduplicated, and frozen
+        const validContext = await createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: 'scan-methods-valid',
+          allowedMethods: ['get', 'post', 'GET'],
+        });
+
+        expect(validContext.allowedMethods).toEqual(['GET', 'POST']);
+        expect(Object.isFrozen(validContext.allowedMethods)).toBe(true);
+      });
+
+      it('validates port ranges and categorically rejects blocked internal ports at context creation', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        // Out of range port (0)
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-ports-zero',
+            allowedPorts: [0],
+          })
+        ).rejects.toThrow(/Invalid destination port '0'/i);
+
+        // Out of range port (70000)
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-ports-high',
+            allowedPorts: [70000],
+          })
+        ).rejects.toThrow(/Invalid destination port '70000'/i);
+
+        // Non-integer port
+        await expect(
+          createAuthoritativeScanScopeContext(store, {
+            orgId: validAsset.orgId,
+            siteId: validAsset.siteId,
+            scanId: 'scan-ports-float',
+            allowedPorts: [80.5],
+          })
+        ).rejects.toThrow(/Invalid destination port '80.5'/i);
+
+        // Blocked internal ports: 22 (SSH), 25 (SMTP), 3306 (MySQL), 6379 (Redis)
+        const blockedPortsToTest = [22, 25, 3306, 6379];
+        for (const blockedPort of blockedPortsToTest) {
+          await expect(
+            createAuthoritativeScanScopeContext(store, {
+              orgId: validAsset.orgId,
+              siteId: validAsset.siteId,
+              scanId: `scan-ports-blocked-${blockedPort}`,
+              allowedPorts: [blockedPort],
+            })
+          ).rejects.toThrow(/prohibited internal infrastructure port/i);
+        }
+      });
+
+      it('unconditionally enforces mandatory server-side excluded paths that cannot be removed by caller', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        // Caller provides no excluded paths
+        const contextDefault = await createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: 'scan-excl-default',
+        });
+
+        for (const mandatory of SERVER_MANDATORY_EXCLUDED_PATHS) {
+          expect(contextDefault.excludedPaths).toContain(mandatory);
+        }
+
+        // Caller provides custom excluded path
+        const contextCustom = await createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: 'scan-excl-custom',
+          excludedPaths: ['/internal/admin'],
+        });
+
+        for (const mandatory of SERVER_MANDATORY_EXCLUDED_PATHS) {
+          expect(contextCustom.excludedPaths).toContain(mandatory);
+        }
+        expect(contextCustom.excludedPaths).toContain('/internal/admin');
+        expect(Object.isFrozen(contextCustom.excludedPaths)).toBe(true);
+      });
+
+      it('proves post-creation tampering with caller argument arrays does not affect the minted context', async () => {
+        const store = new MemoryStore();
+        await store.saveWebsite(validAsset);
+
+        const mutableMethods = ['GET', 'POST'];
+        const mutablePorts = [8080, 8443];
+        const mutableExcluded = ['/secret'];
+
+        const context = await createAuthoritativeScanScopeContext(store, {
+          orgId: validAsset.orgId,
+          siteId: validAsset.siteId,
+          scanId: 'scan-tamper-test',
+          allowedMethods: mutableMethods,
+          allowedPorts: mutablePorts,
+          excludedPaths: mutableExcluded,
+        });
+
+        // Caller mutates the original arrays after minting
+        mutableMethods.push('TRACE');
+        mutablePorts.push(22);
+        mutableExcluded.length = 0; // attempt to wipe excluded paths
+
+        // Context remains completely unaffected and pristine
+        expect(context.allowedMethods).not.toContain('TRACE');
+        expect(context.allowedMethods).toEqual(['GET', 'POST']);
+        expect(context.allowedPorts).not.toContain(22);
+        expect(context.allowedPorts).toEqual([8080, 8443]);
+        expect(context.excludedPaths).toContain('/secret');
+      });
+    });
+
+    describe('P2: Genuinely Immutable Hop-by-Hop Header & Port Policies', () => {
+      it('isRestrictedHopByHopHeader correctly identifies standard and pseudo hop-by-hop headers case-insensitively', () => {
+        const restricted = [
+          'connection', 'Connection', 'CONNECTION',
+          'keep-alive', 'Keep-Alive', 'KEEP-ALIVE',
+          'te', 'TE', 'Te',
+          'trailer', 'Trailer', 'TRAILER',
+          'upgrade', 'Upgrade', 'UPGRADE',
+          'proxy-connection', 'Proxy-Connection',
+          'proxy-authenticate', 'Proxy-Authenticate',
+          'proxy-authorization', 'Proxy-Authorization',
+          'transfer-encoding', 'Transfer-Encoding',
+          'host', 'Host', 'HOST',
+          ':authority', ':method', ':path', ':scheme', ':status',
+        ];
+
+        for (const header of restricted) {
+          expect(isRestrictedHopByHopHeader(header)).toBe(true);
+        }
+
+        const safe = [
+          'accept', 'Accept',
+          'content-type', 'Content-Type',
+          'authorization',
+          'x-custom-scan-header',
+          'user-agent',
+        ];
+
+        for (const header of safe) {
+          expect(isRestrictedHopByHopHeader(header)).toBe(false);
+        }
+
+        expect(isRestrictedHopByHopHeader(null as any)).toBe(false);
+        expect(isRestrictedHopByHopHeader(undefined as any)).toBe(false);
+        expect(isRestrictedHopByHopHeader(123 as any)).toBe(false);
+      });
+
+      it('proves transport module barrel does not expose mutable RESTRICTED_HOP_BY_HOP_HEADERS Set', async () => {
+        const transportModule = await import('../../src/scanner/transport/index.js');
+        // Ensure mutable Set is not exported
+        expect((transportModule as any).RESTRICTED_HOP_BY_HOP_HEADERS).toBeUndefined();
+        // Ensure safe predicate is exported
+        expect(typeof transportModule.isRestrictedHopByHopHeader).toBe('function');
+      });
+
+      it('proves BLOCKED_INTERNAL_PORTS is genuinely immutable and prevents runtime mutation', () => {
+        expect(BLOCKED_INTERNAL_PORTS.has(22)).toBe(true);
+        expect(BLOCKED_INTERNAL_PORTS.has(80)).toBe(false);
+        expect(isBlockedInternalPort(22)).toBe(true);
+        expect(isBlockedInternalPort(80)).toBe(false);
+
+        // Attempting to mutate throws TypeError
+        expect(() => {
+          (BLOCKED_INTERNAL_PORTS as any).add(80);
+        }).toThrow(TypeError);
+
+        expect(() => {
+          (BLOCKED_INTERNAL_PORTS as any).delete(22);
+        }).toThrow(TypeError);
+
+        expect(() => {
+          (BLOCKED_INTERNAL_PORTS as any).clear();
+        }).toThrow(TypeError);
+
+        // Invariants remain intact
+        expect(BLOCKED_INTERNAL_PORTS.has(22)).toBe(true);
+        expect(BLOCKED_INTERNAL_PORTS.has(80)).toBe(false);
       });
     });
 

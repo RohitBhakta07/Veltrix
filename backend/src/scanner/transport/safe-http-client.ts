@@ -16,7 +16,7 @@ import {
   type SafeHttpRequestOptions,
   type SafeHttpResponse,
   SafeTransportError,
-  RESTRICTED_HOP_BY_HOP_HEADERS,
+  isRestrictedHopByHopHeader,
 } from './types.js';
 import { DnsResolver } from './dns-resolver.js';
 import { DefaultSocketConnector } from './socket-connector.js';
@@ -497,7 +497,7 @@ export class SafeHttpClient {
           }
           continue;
         }
-        if (RESTRICTED_HOP_BY_HOP_HEADERS.has(lowerKey) || nominatedHeaders.has(lowerKey)) {
+        if (isRestrictedHopByHopHeader(lowerKey) || nominatedHeaders.has(lowerKey)) {
           continue; // Strip restricted hop-by-hop headers and connection-nominated headers
         }
         sanitizedHeaders[key] = value;
