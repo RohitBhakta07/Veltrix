@@ -159,9 +159,11 @@ export function parseIpv6(ip: string): number[] | null {
   if (clean.startsWith('[') && clean.endsWith(']')) {
     clean = clean.slice(1, -1);
   }
-  const zoneIndex = clean.indexOf('%');
-  if (zoneIndex !== -1) {
-    clean = clean.slice(0, zoneIndex);
+
+  // Zone identifiers (%interface) are only valid for local scoped addresses (RFC 4007 / RFC 6874).
+  // In public domain verification, zone identifiers MUST NOT be silently stripped; they must be rejected.
+  if (clean.includes('%')) {
+    return null;
   }
 
   // Handle embedded IPv4 at the end (e.g. ::ffff:192.168.1.1)
@@ -194,7 +196,9 @@ export function parseIpv6(ip: string): number[] | null {
   let words: number[];
   if (parts.length === 2) {
     const missing = 8 - (left.length + right.length);
-    if (missing < 0) return null;
+    // When '::' is present, RFC 4291 requires at least one compressed zero hextet (missing >= 1).
+    // An address containing 8 hextets plus '::' (e.g. 2001:4860:1:2:3:4:5:6::) is invalid syntax.
+    if (missing < 1) return null;
     words = [...left, ...new Array(missing).fill(0), ...right];
   } else {
     if (left.length !== 8) return null;
@@ -268,6 +272,12 @@ export function isProhibitedIp(ip: string): boolean {
 
     // 3. Preserved exclusions within 2000::/3:
     // - 2002::/16 (6to4, RFC 3056) - validate embedded IPv4 (bytes 2..5)
+    // NOTE (6to4 Policy Assessment):
+    // 6to4 anycast relays were deprecated by RFC 7526 due to operational and security limitations
+    // (return-path asymmetry, lack of relay authentication, and high packet drop rates).
+    // Current policy maintains backward compatibility for legitimate public 6to4 gateways by inspecting
+    // embedded IPv4 bytes against the SSRF denylist, while blocking embedded private, loopback, and IMDS IPs.
+    // In production hardening, this policy can be configured to reject the entire 2002::/16 range.
     if (w0 === 0x2002) {
       const v4: [number, number, number, number] = [
         (words[1]! >>> 8) & 255,

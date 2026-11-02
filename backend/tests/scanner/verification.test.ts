@@ -759,6 +759,22 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       expect(isProhibitedIp('ff02::1')).toBe(true);
       expect(isProhibitedIp('ff05::2')).toBe(true);
 
+      // Strict IPv6 Syntax Validation (RFC 4291 / RFC 5952)
+      // When '::' is present, it must compress at least one 16-bit zero hextet (missing >= 1)
+      expect(isProhibitedIp('2001:4860:1:2:3:4:5:6::')).toBe(true); // 8 hextets plus '::' (0 compressed) -> rejected
+      expect(isProhibitedIp('::2001:4860:1:2:3:4:5:6')).toBe(true); // leading '::' with 8 hextets -> rejected
+      expect(isProhibitedIp('2001:4860:1:2::3:4:5:6')).toBe(true); // middle '::' with 8 hextets -> rejected
+
+      // Valid compressed & fully expanded global unicast IPv6 addresses (allowed)
+      expect(isProhibitedIp('2001:4860::1')).toBe(false); // valid compressed
+      expect(isProhibitedIp('2001:4860:0:0:0:0:0:1')).toBe(false); // valid fully expanded (8 hextets, no '::')
+      expect(isProhibitedIp('2001:4860:0001:0002:0003:0004:0005:0006')).toBe(false); // valid fully expanded
+
+      // Zone identifiers (%interface, RFC 4007 / RFC 6874) - rejected rather than silently stripped
+      expect(isProhibitedIp('fe80::1%eth0')).toBe(true); // link-local with zone ID rejected
+      expect(isProhibitedIp('2001:4860::1%1')).toBe(true); // global unicast with zone ID rejected
+      expect(isProhibitedIp('[fe80::1%eth0]')).toBe(true); // bracketed with zone ID rejected
+
       // Legitimate Public IPv4 & IPv6: allowed
       expect(isProhibitedIp('93.184.216.34')).toBe(false);
       expect(isProhibitedIp('2606:4700:4700::1111')).toBe(false); // Cloudflare Public DNS
@@ -770,8 +786,41 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
       expect(isProhibitedIp(':::1')).toBe(true);
       expect(isProhibitedIp('2001:xyz::1')).toBe(true);
       expect(isProhibitedIp('1:2:3:4:5:6:7:8:9')).toBe(true);
+      expect(isProhibitedIp(':2001:4860::1')).toBe(true);
+      expect(isProhibitedIp('2001:4860::1:')).toBe(true);
       expect(isProhibitedIp('')).toBe(true);
       expect(isProhibitedIp('   ')).toBe(true);
+    });
+
+    it('independently verifies isProhibitedIp() without URL parsing or HTTP wrapping', () => {
+      // Direct functional verification of exported isProhibitedIp()
+      // 1. Strict parser regression cases
+      expect(isProhibitedIp('2001:4860:1:2:3:4:5:6::')).toBe(true);
+      expect(isProhibitedIp('2001:4860::1')).toBe(false);
+      expect(isProhibitedIp('2001:4860:0:0:0:0:0:1')).toBe(false);
+      expect(isProhibitedIp('::8.8.8.8')).toBe(true);
+
+      // 2. Zone identifiers must be rejected, never stripped
+      expect(isProhibitedIp('fe80::1%en0')).toBe(true);
+      expect(isProhibitedIp('2001:4860::1%eth0')).toBe(true);
+
+      // 3. Positive IPv6 Global-Unicast Policy (2000::/3)
+      expect(isProhibitedIp('4000::1')).toBe(true);
+      expect(isProhibitedIp('fe00::1')).toBe(true);
+      expect(isProhibitedIp('f000::1')).toBe(true);
+      expect(isProhibitedIp('3fff::1')).toBe(true); // documentation in 2000::/3
+      expect(isProhibitedIp('2001:db8::1')).toBe(true); // documentation in 2000::/3
+      expect(isProhibitedIp('2001:2::1')).toBe(true); // BMWG in 2000::/3
+
+      // 4. Legitimate public IPv6 global unicast allowed
+      expect(isProhibitedIp('2606:4700:4700::1111')).toBe(false);
+      expect(isProhibitedIp('2001:4860:4860::8888')).toBe(false);
+
+      // 5. 6to4 policy: public IPv4 allowed, private/loopback/IMDS prohibited
+      expect(isProhibitedIp('2002:5db8:d822::1')).toBe(false); // embedded public 93.184.216.34
+      expect(isProhibitedIp('2002:7f00:0001::')).toBe(true); // embedded 127.0.0.1
+      expect(isProhibitedIp('2002:a9fe:a9fe::')).toBe(true); // embedded 169.254.169.254
+      expect(isProhibitedIp('2002:0a00:0001::')).toBe(true); // embedded 10.0.0.1
     });
   });
 
@@ -1126,6 +1175,24 @@ describe('Phase 8: Domain Ownership Verification Subsystem (TASK-801)', () => {
 
       for (const target of prohibitedTargets) {
         await expect(fetcher.fetch(target)).rejects.toThrow(/SSRF blocked/);
+      }
+    });
+
+    it('blocks DNS resolution resolving to malformed IPv6 representations, zero-compression, or zone IDs', async () => {
+      const malformedCases = [
+        '2001:4860:1:2:3:4:5:6::', // 0 hextets compressed with ::
+        'fe80::1%eth0',             // zone identifier
+        '2001:xyz::1',              // malformed hex
+      ];
+
+      for (const badAddress of malformedCases) {
+        const badResolver: AddressResolverInterface = {
+          async lookup() {
+            return [{ address: badAddress, family: 6 }];
+          },
+        };
+        const fetcher = new DefaultHttpFetcher({ addressResolver: badResolver });
+        await expect(fetcher.fetch('http://attacker-controlled.domain/test')).rejects.toThrow(/SSRF blocked/);
       }
     });
 
