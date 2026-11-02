@@ -1,5 +1,6 @@
 import type { HttpFetcherInterface } from './http-verifier.js';
-import { DefaultHttpFetcher } from './http-verifier.js';
+import { SafeVerificationHttpFetcher } from '../transport/verification-fetcher.js';
+import type { VerificationScopeContext } from '../transport/types.js';
 
 export interface MetaVerificationResult {
   matched: boolean;
@@ -11,14 +12,25 @@ export class MetaVerifier {
   private readonly fetcher: HttpFetcherInterface;
 
   constructor(fetcher?: HttpFetcherInterface) {
-    this.fetcher = fetcher || new DefaultHttpFetcher();
+    if (process.env.NODE_ENV === 'production' && fetcher) {
+      throw new Error('FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production.');
+    }
+    this.fetcher = fetcher || new SafeVerificationHttpFetcher();
   }
 
-  async verify(targetUrl: string, expectedToken: string): Promise<MetaVerificationResult> {
+  async verify(
+    targetUrl: string,
+    expectedToken: string,
+    context?: VerificationScopeContext
+  ): Promise<MetaVerificationResult> {
     const cleanExpected = expectedToken.trim();
 
     try {
-      const { status, text } = await this.fetcher.fetch(targetUrl, { timeoutMs: 5000 });
+      const { status, text } = await this.fetcher.fetch(targetUrl, {
+        timeoutMs: 5000,
+        token: cleanExpected,
+        context,
+      });
 
       if (status !== 200) {
         return {

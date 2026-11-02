@@ -2,8 +2,9 @@ import { randomBytes, createHash } from 'node:crypto';
 import type { WebsiteAsset, VerificationMethod } from '@veltrix/shared';
 import type { StorageInterface } from '../../storage/storage-interface.js';
 import { DnsVerifier, type DnsResolverInterface, DefaultDnsResolver } from './dns-verifier.js';
-import { HttpVerifier, type HttpFetcherInterface, DefaultHttpFetcher, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
+import { HttpVerifier, type HttpFetcherInterface, isProhibitedIp, isProhibitedIpv4 } from './http-verifier.js';
 import { MetaVerifier } from './meta-verifier.js';
+import { createAuthoritativeVerificationScopeContext } from '../transport/context-authority.js';
 
 export { isProhibitedIp, isProhibitedIpv4 };
 
@@ -61,12 +62,22 @@ export class DomainOwnershipVerifier {
     } else if (dnsResolverOrOptions && typeof dnsResolverOrOptions === 'object') {
       resolver = dnsResolverOrOptions.dnsResolver;
       fetcher = dnsResolverOrOptions.httpFetcher || httpFetcherArg;
+    } else {
+      fetcher = httpFetcherArg;
     }
 
-    this.dnsVerifier = new DnsVerifier(resolver || new DefaultDnsResolver());
-    const finalFetcher = fetcher || new DefaultHttpFetcher();
-    this.httpVerifier = new HttpVerifier(finalFetcher);
-    this.metaVerifier = new MetaVerifier(finalFetcher);
+    if (process.env.NODE_ENV === 'production') {
+      if (resolver) {
+        throw new Error('FATAL_SECURITY_ERROR: Injected DnsResolver is prohibited in production.');
+      }
+      if (fetcher) {
+        throw new Error('FATAL_SECURITY_ERROR: Injected HttpFetcher is prohibited in production.');
+      }
+    }
+
+    this.dnsVerifier = resolver ? new DnsVerifier(resolver) : new DnsVerifier(new DefaultDnsResolver());
+    this.httpVerifier = fetcher ? new HttpVerifier(fetcher) : new HttpVerifier();
+    this.metaVerifier = fetcher ? new MetaVerifier(fetcher) : new MetaVerifier();
   }
 
   /**
@@ -251,13 +262,15 @@ export class DomainOwnershipVerifier {
       const expectedUrl = site.httpChallenge.url;
       const expectedToken = site.httpChallenge.expectedBody.veltrixChallengeToken;
       const expectedOrgId = site.httpChallenge.expectedBody.orgId;
-      const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId);
+      const verificationContext = await createAuthoritativeVerificationScopeContext(this.storage, { orgId, siteId });
+      const res = await this.httpVerifier.verify(expectedUrl, expectedToken, expectedOrgId, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     } else if (method === 'META_TAG') {
       const targetUrl = `https://${site.primaryDomain.toLowerCase().trim()}/`;
       const expectedToken = site.verificationToken;
-      const res = await this.metaVerifier.verify(targetUrl, expectedToken);
+      const verificationContext = await createAuthoritativeVerificationScopeContext(this.storage, { orgId, siteId });
+      const res = await this.metaVerifier.verify(targetUrl, expectedToken, verificationContext);
       isMatch = res.matched;
       failureReason = res.failureReason || '';
     }
