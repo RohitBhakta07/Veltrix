@@ -24,3 +24,4 @@ describe('IntegrationsPage Component', () => {
     expect(html).toContain('Refresh');
   });
 });
+
