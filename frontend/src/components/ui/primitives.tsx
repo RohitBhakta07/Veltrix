@@ -132,7 +132,7 @@ export function RiskBadge({ band, score }: { band?: string; score?: number }) {
   );
 }
 
-export function ConfidenceBadge({ confidence }: { confidence?: string }) {
+export function ConfidenceBadge({ confidence }: { confidence?: string | number }) {
   return <Badge tone={confidenceTone(confidence)}>{confidenceLabel(confidence)}</Badge>;
 }
 

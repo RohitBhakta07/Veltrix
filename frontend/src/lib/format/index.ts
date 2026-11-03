@@ -103,23 +103,36 @@ export function riskTone(band?: string): Tone {
   }
 }
 
-export function confidenceTone(confidence?: WebConfidenceTier | string): Tone {
-  switch (confidence) {
+export function confidenceTone(confidence?: WebConfidenceTier | string | number): Tone {
+  if (typeof confidence === 'number') {
+    if (confidence >= 80) return 'critical';
+    if (confidence >= 60) return 'high';
+    if (confidence >= 40) return 'medium';
+    return 'low';
+  }
+  switch (confidence?.toUpperCase()) {
     case 'CONFIRMED_EXPLOITATION':
+    case 'CRITICAL':
       return 'critical';
     case 'POTENTIAL_EXPLOITATION':
+    case 'HIGH':
       return 'high';
-    case 'BLOCKED_ATTEMPT':
-      return 'low';
     case 'SUSPICIOUS_ATTEMPT':
+    case 'MEDIUM':
       return 'medium';
+    case 'BLOCKED_ATTEMPT':
+    case 'LOW':
+      return 'low';
     default:
       return 'neutral';
   }
 }
 
-export function confidenceLabel(confidence?: WebConfidenceTier | string): string {
-  switch (confidence) {
+export function confidenceLabel(confidence?: WebConfidenceTier | string | number): string {
+  if (typeof confidence === 'number') {
+    return `${confidence}% confidence`;
+  }
+  switch (confidence?.toUpperCase()) {
     case 'CONFIRMED_EXPLOITATION':
       return 'Confirmed exploitation';
     case 'POTENTIAL_EXPLOITATION':
@@ -128,6 +141,14 @@ export function confidenceLabel(confidence?: WebConfidenceTier | string): string
       return 'Blocked attempt';
     case 'SUSPICIOUS_ATTEMPT':
       return 'Suspicious attempt';
+    case 'CRITICAL':
+      return 'Critical confidence';
+    case 'HIGH':
+      return 'High confidence';
+    case 'MEDIUM':
+      return 'Medium confidence';
+    case 'LOW':
+      return 'Low confidence';
     default:
       return 'Unclassified';
   }
