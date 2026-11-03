@@ -50,3 +50,4 @@ describe('AuditPage Component', () => {
     expect(html).toContain('SHA-256');
   });
 });
+
