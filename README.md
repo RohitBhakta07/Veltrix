@@ -9,7 +9,7 @@
 
 ---
 
-## 1. System Overview
+## 1. System Overview 
 
 **VELTRIX** is a unified website security platform combining **Continuous Website Attack Monitoring** with **Authorized Website Vulnerability Assessment**. It ingests real-time web telemetry from application SDKs, reverse proxies, and cloud firewalls, detects attack patterns (SQLi, XSS, Path Traversal, Brute Force, Bots, API abuse), performs non-destructive policy-governed vulnerability scans (TLS, headers, cookies, CORS, OWASP ZAP), and correlates attacks with known asset vulnerabilities to compute explainable risk scores.
 
