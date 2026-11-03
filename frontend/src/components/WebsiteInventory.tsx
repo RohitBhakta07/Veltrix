@@ -106,7 +106,7 @@ export function WebsiteInventory() {
     }
   };
 
-  const handleVerify = async (method: 'DNS_TXT' | 'HTTP_CHALLENGE') => {
+  const handleVerify = async (method: 'DNS_TXT' | 'HTTP_CHALLENGE' | 'META_TAG') => {
     if (!selectedSiteForVerify) return;
     setIsVerifying(true);
     setActionMessage(null);
@@ -673,6 +673,46 @@ export function WebsiteInventory() {
               >
                 {isVerifying && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                 <span>Check & Verify HTTP Endpoint</span>
+              </button>
+            </div>
+
+            {/* Method C: HTML Meta Tag */}
+            <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">
+                  Option 3: HTML Meta-Tag Challenge
+                </span>
+                <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded">
+                  Fast Verification
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase font-semibold">HTML Header Tag</span>
+                  <div className="flex items-center justify-between bg-slate-950 px-3 py-1.5 rounded font-mono text-slate-200 border border-slate-800">
+                    <span className="truncate">
+                      {`<meta name="veltrix-verification" content="${selectedSiteForVerify.dnsTxtRecord?.value || selectedSiteForVerify.siteId}" />`}
+                    </span>
+                    <button
+                      onClick={() =>
+                        copyToClipboard(
+                          `<meta name="veltrix-verification" content="${selectedSiteForVerify.dnsTxtRecord?.value || selectedSiteForVerify.siteId}" />`
+                        )
+                      }
+                      className="text-slate-400 hover:text-emerald-400 ml-2"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button
+                disabled={isVerifying}
+                onClick={() => handleVerify('META_TAG')}
+                className="w-full mt-2 py-2 text-xs font-semibold rounded bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center justify-center space-x-1.5"
+              >
+                {isVerifying && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                <span>Check & Verify HTML Meta Tag</span>
               </button>
             </div>
           </div>
