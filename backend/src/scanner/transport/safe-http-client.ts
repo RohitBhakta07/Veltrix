@@ -15,6 +15,7 @@ import {
   type SocketConnectorInterface,
   type SafeHttpRequestOptions,
   type SafeHttpResponse,
+  type SanitizedTlsMetadata,
   SafeTransportError,
   isRestrictedHopByHopHeader,
 } from './types.js';
@@ -34,6 +35,70 @@ export interface SafeHttpClientOptions {
   socketConnector?: SocketConnectorInterface;
   socketRegistry?: ActiveSocketRegistry;
   allowLoopbackForTesting?: boolean;
+}
+
+function extractSanitizedTlsMetadata(
+  socket: net.Socket | tls.TLSSocket | null
+): SanitizedTlsMetadata | undefined {
+  if (
+    !socket ||
+    !('getProtocol' in socket) ||
+    typeof (socket as tls.TLSSocket).getProtocol !== 'function'
+  ) {
+    return undefined;
+  }
+  const tlsSock = socket as tls.TLSSocket;
+  try {
+    const protocol = typeof tlsSock.getProtocol === 'function' ? tlsSock.getProtocol() : null;
+    const cipher = typeof tlsSock.getCipher === 'function' ? tlsSock.getCipher() : undefined;
+    const cert = typeof tlsSock.getPeerCertificate === 'function' ? tlsSock.getPeerCertificate() : null;
+    const authorized = tlsSock.authorized !== false;
+    const authorizationError = tlsSock.authorizationError
+      ? String(tlsSock.authorizationError)
+      : undefined;
+
+    let peerCertificate: SanitizedTlsMetadata['peerCertificate'] = undefined;
+    if (cert && typeof cert === 'object' && cert.valid_to) {
+      const subject: Record<string, string> = {};
+      if (cert.subject && typeof cert.subject === 'object') {
+        for (const [k, v] of Object.entries(cert.subject)) {
+          if (typeof v === 'string') subject[k] = v;
+        }
+      }
+      const issuer: Record<string, string> = {};
+      if (cert.issuer && typeof cert.issuer === 'object') {
+        for (const [k, v] of Object.entries(cert.issuer)) {
+          if (typeof v === 'string') issuer[k] = v;
+        }
+      }
+      const subjectAltNames = cert.subjectaltname
+        ? cert.subjectaltname.split(', ').map((s) => s.trim()).filter(Boolean)
+        : undefined;
+
+      peerCertificate = Object.freeze({
+        subject: Object.freeze(subject),
+        issuer: Object.freeze(issuer),
+        validFrom: cert.valid_from || '',
+        validTo: cert.valid_to || '',
+        subjectAltNames: subjectAltNames ? Object.freeze(subjectAltNames) : undefined,
+        serialNumber: cert.serialNumber || undefined,
+        fingerprint256: cert.fingerprint256 || undefined,
+      });
+    }
+
+    return Object.freeze({
+      protocol,
+      cipher:
+        cipher && cipher.name
+          ? Object.freeze({ name: cipher.name, version: cipher.version })
+          : undefined,
+      authorized,
+      authorizationError,
+      peerCertificate,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 export class SafeHttpClient {
@@ -612,10 +677,30 @@ export class SafeHttpClient {
             }
           }
 
+          const setCookies: string[] = [];
+          const rawH = res.rawHeaders;
+          if (Array.isArray(res.headers['set-cookie'])) {
+            setCookies.push(...res.headers['set-cookie']);
+          } else if (typeof res.headers['set-cookie'] === 'string') {
+            setCookies.push(res.headers['set-cookie']);
+          } else if (rawH) {
+            for (let i = 0; i < rawH.length; i += 2) {
+              const hName = rawH[i];
+              const hVal = rawH[i + 1];
+              if (hName && hVal && hName.toLowerCase() === 'set-cookie') {
+                setCookies.push(hVal);
+              }
+            }
+          }
+
+          const tlsMetadata = extractSanitizedTlsMetadata(activeSocket);
+
           const fullResponse: SafeHttpResponse = {
             status: statusCode,
             statusText: res.statusMessage || 'OK',
             headers: responseHeaders,
+            setCookies: Object.freeze(setCookies),
+            rawHeaders: res.rawHeaders ? Object.freeze([...res.rawHeaders]) : undefined,
             rawBody: decompressResult.bodyBuffer,
             rawBuffer: decompressResult.bodyBuffer,
             text,
@@ -625,6 +710,7 @@ export class SafeHttpClient {
             wireBytesReceived: decompressResult.wireBytesReceived,
             decompressedBytes: decompressResult.decompressedBytes,
             redirectHops: 0,
+            tls: tlsMetadata,
           };
 
           resolve({

@@ -370,6 +370,12 @@ export class BoundedCrawler {
         discoveredEndpoints: Object.freeze(discoveredEndpoints),
         durationMs,
         wireBytesReceived: res.wireBytesReceived || 0,
+        headers: res.headers,
+        setCookies: res.setCookies,
+        rawHeaders: res.rawHeaders,
+        bodyText: res.text,
+        rawBody: res.rawBody,
+        tls: res.tls,
       });
     } catch (err) {
       const durationMs = Date.now() - pageStartTime;

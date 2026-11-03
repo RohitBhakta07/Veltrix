@@ -192,10 +192,30 @@ export interface SafeHttpRequestOptions {
   allowLoopbackForTesting?: boolean; // Allowed strictly in unit test harnesses
 }
 
+export interface SanitizedTlsCertificate {
+  readonly subject: Record<string, string>;
+  readonly issuer: Record<string, string>;
+  readonly validFrom: string;
+  readonly validTo: string;
+  readonly subjectAltNames?: readonly string[];
+  readonly serialNumber?: string;
+  readonly fingerprint256?: string;
+}
+
+export interface SanitizedTlsMetadata {
+  readonly protocol: string | null;
+  readonly cipher?: { readonly name: string; readonly version: string };
+  readonly authorized: boolean;
+  readonly authorizationError?: string;
+  readonly peerCertificate?: SanitizedTlsCertificate;
+}
+
 export interface SafeHttpResponse {
   status: number;
   statusText: string;
   headers: Record<string, string>;
+  setCookies?: readonly string[];
+  rawHeaders?: readonly string[];
   rawBody: Buffer;
   rawBuffer?: Buffer;
   text: string;
@@ -205,4 +225,5 @@ export interface SafeHttpResponse {
   wireBytesReceived: number;
   decompressedBytes: number;
   redirectHops: number;
+  tls?: SanitizedTlsMetadata;
 }

@@ -5,6 +5,8 @@
  * bounded, deterministic BFS web crawler and link extraction pipeline.
  */
 
+import type { SanitizedTlsMetadata } from '../transport/types.js';
+
 export type CrawlStoppedReason =
   | 'COMPLETED'
   | 'MAX_PAGES_REACHED'
@@ -43,6 +45,12 @@ export interface CrawledPage {
   readonly durationMs: number;
   readonly wireBytesReceived: number;
   readonly error?: string;
+  readonly headers?: Record<string, string>;
+  readonly setCookies?: readonly string[];
+  readonly rawHeaders?: readonly string[];
+  readonly bodyText?: string;
+  readonly rawBody?: Buffer;
+  readonly tls?: SanitizedTlsMetadata;
 }
 
 export interface CrawlerOptions {
