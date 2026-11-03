@@ -101,3 +101,4 @@ describe('EventsPage Component', () => {
     expect(html).toContain('198.51.100.12');
   });
 });
+

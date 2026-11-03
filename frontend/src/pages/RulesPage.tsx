@@ -1,18 +1,25 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SlidersHorizontal, Shield, Play } from 'lucide-react';
 import type { DetectionRule } from '@veltrix/shared';
-import { fetchRules, testRule } from '../lib/api/endpoints';
-import { Card, Badge, Button, LoadingPanel } from '../components/ui/primitives';
+import { fetchRules, testRule, updateRule } from '../lib/api/endpoints';
+import { Card, Badge, Button, LoadingPanel, Toggle } from '../components/ui/primitives';
 
 export function RulesPage() {
   const [testPayload, setTestPayload] = useState('{"eventType": "web.attack.sqli", "sourceIp": "198.51.100.42"}');
   const [testResult, setTestResult] = useState<any>(null);
   const [testing, setTesting] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: rulesRes, isLoading } = useQuery({
     queryKey: ['detection-rules'],
     queryFn: () => fetchRules(),
+  });
+
+  const toggleRule = useMutation({
+    mutationFn: ({ ruleId, isEnabled }: { ruleId: string; isEnabled: boolean }) =>
+      updateRule(ruleId, { isEnabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['detection-rules'] }),
   });
 
   const rules: DetectionRule[] = rulesRes?.data?.rules || [];
@@ -30,8 +37,6 @@ export function RulesPage() {
     }
   };
 
-  if (isLoading) return <LoadingPanel rows={6} />;
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -46,7 +51,10 @@ export function RulesPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {isLoading ? (
+        <LoadingPanel rows={6} />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           {rules.map((rule: DetectionRule) => (
             <Card key={rule.ruleId} className="p-4 space-y-3">
@@ -62,15 +70,25 @@ export function RulesPage() {
                   <h3 className="text-sm font-semibold text-white mt-1">{rule.name}</h3>
                   <p className="text-xs text-slate-400 mt-0.5">{rule.description}</p>
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon={Play}
-                  disabled={testing}
-                  onClick={() => handleRunTest(rule.ruleId)}
-                >
-                  {testing ? 'Testing...' : 'Test Rule'}
-                </Button>
+                <div className="flex items-center gap-3">
+                  <Toggle
+                    checked={rule.isEnabled}
+                    disabled={toggleRule.isPending}
+                    onChange={(checked) =>
+                      toggleRule.mutate({ ruleId: rule.ruleId, isEnabled: checked })
+                    }
+                    label={`Enable ${rule.name}`}
+                  />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={Play}
+                    disabled={testing}
+                    onClick={() => handleRunTest(rule.ruleId)}
+                  >
+                    {testing ? 'Testing...' : 'Test Rule'}
+                  </Button>
+                </div>
               </div>
 
               <div className="flex items-center gap-4 text-[11px] text-slate-400 font-mono border-t border-slate-800/80 pt-2">
@@ -107,6 +125,7 @@ export function RulesPage() {
           </Card>
         </div>
       </div>
+      )}
     </div>
   );
 }
