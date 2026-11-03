@@ -4,10 +4,191 @@
 
 :root {
   color-scheme: dark;
+  --vx-bg: #0a0f1d;
+  --vx-chrome: #070b14;
+  --vx-surface: #0d1527;
+  --vx-card: #111c35;
+  --vx-border: #1e2b45;
+  --vx-cyan: #00f2fe;
+  --vx-text: #f8fafc;
+  --vx-muted: #94a3b8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
-  background-color: #0A0F1D;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  min-height: 100vh;
+  background-color: var(--vx-bg);
+  background-image:
+    radial-gradient(ellipse at 15% -10%, rgba(0, 242, 254, 0.08), transparent 50%),
+    radial-gradient(ellipse at 95% 0%, rgba(37, 99, 235, 0.1), transparent 45%);
+  background-attachment: fixed;
+  color: var(--vx-text);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #22304d;
+  border-radius: 999px;
+  border: 2px solid var(--vx-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #31456b;
+}
+
+::selection {
+  background: rgba(0, 242, 254, 0.25);
+  color: #f8fafc;
+}
+
+:focus-visible {
+  outline: 2px solid var(--vx-cyan);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .vx-card {
+    @apply rounded-xl border border-veltrix-border bg-veltrix-card/85 shadow-card backdrop-blur-sm;
+  }
+
+  .vx-panel {
+    @apply rounded-xl border border-veltrix-border bg-veltrix-surface/70 backdrop-blur-sm;
+  }
+
+  .vx-label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-veltrix-textMuted;
+  }
+
+  .vx-mono {
+    @apply font-mono text-[12px] tabular-nums;
+  }
+
+  .vx-hairline {
+    @apply border-b border-veltrix-border/70;
+  }
+
+  .vx-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .vx-button-primary {
+    @apply vx-button bg-gradient-to-r from-veltrix-cyan to-veltrix-blue text-veltrix-chrome shadow-glow hover:brightness-110 active:scale-[0.99];
+  }
+
+  .vx-button-secondary {
+    @apply vx-button border border-veltrix-border bg-veltrix-surface text-slate-200 hover:border-slate-600 hover:bg-veltrix-elevated;
+  }
+
+  .vx-button-ghost {
+    @apply vx-button text-slate-300 hover:bg-white/5 hover:text-white;
+  }
+
+  .vx-button-danger {
+    @apply vx-button border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20;
+  }
+
+  .vx-input {
+    @apply w-full rounded-lg border border-veltrix-border bg-veltrix-chrome/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-veltrix-cyan/60 focus:outline-none focus:ring-1 focus:ring-veltrix-cyan/40;
+  }
+
+  .vx-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide;
+  }
+
+  .vx-table {
+    @apply w-full border-separate border-spacing-0 text-left text-sm;
+  }
+
+  .vx-table thead th {
+    @apply sticky top-0 z-10 border-b border-veltrix-border bg-veltrix-surface/95 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 backdrop-blur;
+  }
+
+  .vx-table tbody td {
+    @apply border-b border-veltrix-border/50 px-3 py-3 text-slate-300;
+  }
+
+  .vx-table tbody tr {
+    @apply transition-colors hover:bg-white/[0.025];
+  }
+
+  .vx-skeleton {
+    @apply relative overflow-hidden rounded-md bg-white/5;
+  }
+
+  .vx-skeleton::after {
+    content: '';
+    @apply absolute inset-0 animate-shimmer;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.06),
+      transparent
+    );
+    background-size: 500px 100%;
+  }
+
+  .vx-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #22304d transparent;
+  }
+}
+
+@layer utilities {
+  .vx-grid-bg {
+    background-image:
+      linear-gradient(rgba(30, 43, 69, 0.28) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(30, 43, 69, 0.28) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: linear-gradient(to bottom, black, transparent 85%);
+  }
+
+  .vx-text-glow {
+    text-shadow: 0 0 24px rgba(0, 242, 254, 0.35);
+  }
+
+  .vx-border-gradient {
+    background:
+      linear-gradient(var(--vx-card), var(--vx-card)) padding-box,
+      linear-gradient(135deg, rgba(0, 242, 254, 0.45), rgba(37, 99, 235, 0.15), rgba(0, 242, 254, 0.05))
+        border-box;
+    border: 1px solid transparent;
+  }
+
+  .vx-severity-bar {
+    box-shadow: 0 0 12px currentColor;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

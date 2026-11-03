@@ -9,6 +9,10 @@ import { createThreatIndicatorsRouter } from './routes/threat-indicators.js';
 import { createWebsitesRouter } from './routes/websites.js';
 import { createIntegrationsRouter } from './routes/integrations.js';
 import { createIncidentsRouter } from './routes/incidents.js';
+import { createDashboardRouter } from './routes/dashboard.js';
+import { createDemoRouter } from './routes/demo.js';
+import { createAuditRouter } from './routes/audit.js';
+import { createResponseRouter } from './routes/response.js';
 import { authenticate } from './middleware/auth.js';
 import { enforceTenantIsolation } from './middleware/tenant.js';
 import { requireRole } from './middleware/rbac.js';
@@ -88,6 +92,16 @@ export function createApp() {
 
   // Correlated Incident Management Routes (TASK-706, TASK-707)
   app.use('/api/v1/incidents', createIncidentsRouter());
+
+  // Aggregated SOC console read model (Phase 11)
+  app.use('/api/v1/dashboard', createDashboardRouter());
+
+  // Approval-gated response queue & tamper-evident audit ledger (Phase 10 read/act surface)
+  app.use('/api/v1/response', createResponseRouter());
+  app.use('/api/v1/audit', createAuditRouter());
+
+  // Development-only deterministic demo dataset
+  app.use('/api/v1/demo', createDemoRouter());
 
   // Multi-Tenant Isolation Verification Route (TASK-303)
   app.get(

@@ -105,13 +105,24 @@ export function createDetectionsRouter(
   router.get('/web', async (req: Request, res: Response) => {
     try {
       const orgId = req.tenantOrgId!;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
-      const queryResult = await store.getDetections(orgId, { limit });
-      const webDetections = queryResult.items.filter(
-        (d) =>
-          d.ruleId.startsWith('RULE-10') ||
-          (d.evidence?.details as { attackType?: string } | undefined)?.attackType !== undefined
+      const limit = Math.min(
+        500,
+        Math.max(1, req.query.limit ? parseInt(req.query.limit as string, 10) : 100)
       );
+      const siteId = typeof req.query.siteId === 'string' ? req.query.siteId : undefined;
+      // Query with the site filter at the storage layer, then apply the web-rule
+      // predicate. Fetch a bounded window so pagination is not silently wrong.
+      const queryResult = await store.getDetections(orgId, {
+        limit: siteId ? 500 : Math.min(limit * 5, 500),
+        siteId,
+      });
+      const webDetections = queryResult.items
+        .filter(
+          (d) =>
+            d.ruleId.startsWith('RULE-10') ||
+            (d.evidence?.details as { attackType?: string } | undefined)?.attackType !== undefined
+        )
+        .slice(0, limit);
 
       const response: ApiResponse<{
         items: Detection[];

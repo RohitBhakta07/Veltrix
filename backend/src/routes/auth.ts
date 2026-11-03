@@ -197,6 +197,72 @@ export function createAuthRouter(): Router {
     res.status(200).json(response);
   });
 
+  /**
+   * POST /auth/demo-login (development only)
+   * One-click access to the seeded demo identities so the console can be
+   * demonstrated without shipping credentials in the browser bundle.
+   * Disabled in production and in AWS/Cognito mode.
+   */
+  router.post('/demo-login', async (req: Request, res: Response) => {
+    if (process.env.NODE_ENV === 'production' || process.env.STORAGE_MODE === 'aws') {
+      res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Demo login is not available in this environment' },
+      });
+      return;
+    }
+
+    const accounts: Record<string, { email: string; password: string; orgId: string }> = {
+      ORG_ADMIN: {
+        email: 'admin@cyberdefend.corp',
+        password: 'OrgAdmin#2026!',
+        orgId: 'org-enterprise-01',
+      },
+      SECURITY_ANALYST: {
+        email: 'analyst@cyberdefend.corp',
+        password: 'Analyst#2026!',
+        orgId: 'org-enterprise-01',
+      },
+      READ_ONLY_VIEWER: {
+        email: 'auditor@cyberdefend.corp',
+        password: 'Auditor#2026!',
+        orgId: 'org-enterprise-01',
+      },
+      SUPER_ADMIN: {
+        email: 'superadmin@veltrix.io',
+        password: 'SuperAdmin#2026!',
+        orgId: 'org-master-mss',
+      },
+    };
+
+    const account = accounts[String(req.body?.role || 'ORG_ADMIN')];
+    if (!account) {
+      res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_DEMO_ROLE', message: 'Unknown demo role requested' },
+      });
+      return;
+    }
+
+    try {
+      const session = await getAuthProvider().login(account);
+      const response: ApiResponse<AuthSession> = {
+        success: true,
+        data: session,
+        meta: { timestamp: new Date().toISOString() },
+      };
+      res.status(200).json(response);
+    } catch (err: unknown) {
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'DEMO_LOGIN_FAILED',
+          message: err instanceof Error ? err.message : 'Demo login failed',
+        },
+      });
+    }
+  });
+
   // GET /auth/me (Protected)
   router.get('/me', authenticate, async (req: Request, res: Response) => {
     const response: ApiResponse<typeof req.user> = {

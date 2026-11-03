@@ -4,6 +4,7 @@ import {
   type ApiErrorResponse,
   type Incident,
   type IncidentStatus,
+  IncidentUpdateSchema,
 } from '@veltrix/shared';
 import { authenticate, requireBearerAuth } from '../middleware/auth.js';
 import { enforceTenantIsolation } from '../middleware/tenant.js';
@@ -126,7 +127,24 @@ export function createIncidentsRouter(storage?: StorageInterface): Router {
       try {
         const orgId = req.tenantOrgId!;
         const incidentId = String(req.params.incidentId || '');
-        const { status, assignedTo, note } = req.body || {};
+        const parseResult = IncidentUpdateSchema.safeParse(req.body || {});
+        if (!parseResult.success) {
+          const errorResponse: ApiErrorResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_FAILED',
+              message: 'Invalid incident update parameters',
+              details: parseResult.error.errors.map((e) => ({
+                field: e.path.join('.'),
+                message: e.message,
+              })),
+            },
+          };
+          res.status(400).json(errorResponse);
+          return;
+        }
+
+        const { status, assignedTo, note } = parseResult.data;
 
         const incident = await store.getIncidentById(orgId, incidentId);
         if (!incident || incident.orgId !== orgId) {
@@ -138,6 +156,28 @@ export function createIncidentsRouter(storage?: StorageInterface): Router {
             },
           };
           res.status(404).json(errorResponse);
+          return;
+        }
+
+        // Enforce the documented incident lifecycle. Analysts may re-open a
+        // closed incident, but may not skip straight to RESOLVED without triage.
+        const allowedTransitions: Record<IncidentStatus, IncidentStatus[]> = {
+          NEW: ['INVESTIGATING', 'CONTAINED', 'FALSE_POSITIVE'],
+          INVESTIGATING: ['CONTAINED', 'RESOLVED', 'FALSE_POSITIVE'],
+          CONTAINED: ['INVESTIGATING', 'RESOLVED'],
+          RESOLVED: ['INVESTIGATING'],
+          FALSE_POSITIVE: ['INVESTIGATING'],
+        };
+
+        if (status && status !== incident.status && !allowedTransitions[incident.status].includes(status)) {
+          const errorResponse: ApiErrorResponse = {
+            success: false,
+            error: {
+              code: 'INVALID_STATUS_TRANSITION',
+              message: `Cannot transition incident from '${incident.status}' to '${status}'.`,
+            },
+          };
+          res.status(409).json(errorResponse);
           return;
         }
 
