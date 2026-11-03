@@ -148,13 +148,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                   type="button"
                   onMouseEnter={() => setActive(index)}
                   onClick={() => void entry.run()}
-                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition ${
+                  className={`flex w-full items-center gap-3 rounded-control px-3 py-2.5 text-left transition-colors ${
                     active === index
-                      ? 'bg-cyan-500/10 text-cyan-100'
-                      : 'text-slate-300 hover:bg-white/[0.03]'
+                      ? 'bg-veltrix-elevated text-white shadow-[inset_2px_0_0_0_var(--dp-color-signal)]'
+                      : 'text-slate-300 hover:bg-white/[0.035]'
                   }`}
                 >
-                  <span className="rounded-md border border-veltrix-border bg-veltrix-surface p-1.5 text-cyan-300">
+                  <span className="rounded-control border border-veltrix-border bg-veltrix-surface p-1.5 text-slate-400">
                     <Icon className="h-3.5 w-3.5" />
                   </span>
                   <span className="min-w-0 flex-1">
@@ -169,7 +169,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         </div>
 
         {status ? (
-          <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/5 px-3 py-2 text-[11px] text-cyan-200">
+          <div className="rounded-control border border-veltrix-border bg-veltrix-elevated px-3 py-2 text-[11px] text-slate-300">
             {status}
           </div>
         ) : null}

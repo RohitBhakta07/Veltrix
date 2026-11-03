@@ -33,6 +33,8 @@ import {
 } from '../components/ui/primitives';
 import { formatCompact, formatNumber, riskTone, scoreColor, timeAgo, titleCase } from '../lib/format';
 import { useAuth } from '../features/auth/AuthProvider';
+import { RevealSection } from '../reveal/RevealSection';
+import { ReplayButton } from '../reveal/ReplayButton';
 
 const RANGES = [
   { id: '1', label: '1h' },
@@ -69,6 +71,7 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6">
+      <RevealSection index={0}>
       <PageHeader
         eyebrow="Command"
         title="Security posture overview"
@@ -99,6 +102,7 @@ export function OverviewPage() {
           </>
         }
       />
+      </RevealSection>
 
       {seed.data ? (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-2.5 text-[11px] text-emerald-200">
@@ -135,10 +139,13 @@ export function OverviewPage() {
 
       {data && kpis ? (
         <>
+          <RevealSection index={1}>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
             <KpiTile
               label="Events in window"
               value={formatCompact(kpis.eventsInWindow)}
+              countTo={kpis.eventsInWindow}
+              formatCount={(n) => formatCompact(Math.round(n))}
               hint={`last ${data.rangeHours}h · all sources`}
               icon={Activity}
               tone="info"
@@ -146,6 +153,8 @@ export function OverviewPage() {
             <KpiTile
               label="Attack events"
               value={formatCompact(kpis.attacksInWindow)}
+              countTo={kpis.attacksInWindow}
+              formatCount={(n) => formatCompact(Math.round(n))}
               hint="web.attack.* + credential stuffing"
               icon={Crosshair}
               tone="high"
@@ -153,6 +162,8 @@ export function OverviewPage() {
             <KpiTile
               label="Detections"
               value={formatCompact(kpis.detectionsInWindow)}
+              countTo={kpis.detectionsInWindow}
+              formatCount={(n) => formatCompact(Math.round(n))}
               hint="rule matches with evidence"
               icon={Radar}
               tone="medium"
@@ -160,6 +171,8 @@ export function OverviewPage() {
             <KpiTile
               label="Open incidents"
               value={formatNumber(kpis.openIncidents)}
+              countTo={kpis.openIncidents}
+              formatCount={(n) => formatNumber(Math.round(n))}
               hint={`${kpis.criticalIncidents} critical unresolved`}
               icon={Siren}
               tone={kpis.criticalIncidents > 0 ? 'critical' : 'low'}
@@ -179,14 +192,18 @@ export function OverviewPage() {
               tone={kpis.avgRiskScore >= 50 ? 'critical' : 'low'}
             />
           </div>
+          </RevealSection>
 
+          <RevealSection index={2}>
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <div className="xl:col-span-2">
               <VelocityChart data={data.velocity} />
             </div>
             <SeverityDonut data={data.severity} />
           </div>
+          </RevealSection>
 
+          <RevealSection index={3}>
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <MitreBars data={data.mitre} />
             <Card className="p-5">
@@ -271,7 +288,9 @@ export function OverviewPage() {
               </div>
             </Card>
           </div>
+          </RevealSection>
 
+          <RevealSection index={4}>
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-veltrix-border/70 px-5 py-4">
               <SectionHeader
@@ -362,7 +381,9 @@ export function OverviewPage() {
               </div>
             )}
           </Card>
+          </RevealSection>
 
+          <RevealSection index={5}>
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <Card>
               <div className="flex items-center justify-between border-b border-veltrix-border/70 px-5 py-4">
@@ -384,7 +405,7 @@ export function OverviewPage() {
                     <Link
                       key={detection.detectionId}
                       to={`/detections?focus=${detection.detectionId}`}
-                      className="flex items-start gap-3 px-5 py-3 transition hover:bg-white/[0.025]"
+                      className="vx-row-hover flex items-start gap-3 px-5 py-3 transition-colors"
                     >
                       <SeverityBadge severity={detection.severity} />
                       <div className="min-w-0 flex-1">
@@ -426,7 +447,7 @@ export function OverviewPage() {
                     <Link
                       key={incident.incidentId}
                       to={`/incidents?focus=${incident.incidentId}`}
-                      className="flex items-start gap-3 px-5 py-3 transition hover:bg-white/[0.025]"
+                      className="vx-row-hover flex items-start gap-3 px-5 py-3 transition-colors"
                     >
                       <SeverityBadge severity={incident.severity} />
                       <div className="min-w-0 flex-1">
@@ -446,8 +467,11 @@ export function OverviewPage() {
               </div>
             </Card>
           </div>
+          </RevealSection>
         </>
       ) : null}
+
+      <ReplayButton />
     </div>
   );
 }

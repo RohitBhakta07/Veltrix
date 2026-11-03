@@ -2,16 +2,118 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * VELTRIX — Hybrid SOC Console tokens.
+ *
+ * Colour values are stored as RGB channels so Tailwind can keep applying
+ * opacity modifiers (`bg-veltrix-card/60`) while the value itself stays
+ * themeable. Dark and Light are designed independently, not inverted.
+ */
 :root {
   color-scheme: dark;
-  --vx-bg: #0a0f1d;
-  --vx-chrome: #070b14;
-  --vx-surface: #0d1527;
-  --vx-card: #111c35;
-  --vx-border: #1e2b45;
-  --vx-cyan: #00f2fe;
-  --vx-text: #f8fafc;
-  --vx-muted: #94a3b8;
+
+  --dp-ground: 5 5 5;
+  --dp-panel: 14 14 14;
+  --dp-panel-elevated: 21 21 21;
+  --dp-panel-subtle: 25 25 25;
+  --dp-sunken: 8 8 8;
+  --dp-ink: 242 242 242;
+  --dp-ink-body: 181 184 189;
+  --dp-ink-muted: 137 142 150;
+  --dp-line: 37 37 37;
+  --dp-line-strong: 56 56 56;
+  --dp-signal: 56 255 142;
+  --dp-signal-soft: 16 39 27;
+  --dp-registration: 101 248 255;
+  --dp-registration-soft: 10 32 38;
+  --dp-registration-line: 26 74 84;
+  --dp-interference: 255 101 216;
+  --dp-sketch: 118 170 255;
+  --dp-inverse-ink: 9 9 9;
+  --dp-live: 63 214 198;
+  --dp-live-soft: 10 38 34;
+  --dp-live-line: 29 106 97;
+
+  --dp-sev-critical: 255 109 134;
+  --dp-sev-critical-soft: 42 17 25;
+  --dp-sev-critical-line: 122 34 51;
+  --dp-sev-high: 255 171 115;
+  --dp-sev-high-soft: 42 24 16;
+  --dp-sev-high-line: 125 67 38;
+  --dp-sev-medium: 255 217 138;
+  --dp-sev-medium-soft: 42 34 16;
+  --dp-sev-medium-line: 125 100 38;
+  --dp-sev-low: 125 207 255;
+  --dp-sev-low-soft: 13 34 51;
+  --dp-sev-low-line: 36 97 138;
+
+  --dp-btn-primary-bg: 242 242 242;
+  --dp-btn-primary-ink: 9 9 9;
+  --dp-hover: 255 255 255;
+
+  --dp-shadow-panel: 0 0 0 0 rgba(0, 0, 0, 0);
+  --dp-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --dp-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  --dp-typography-display: 'Geist', 'Helvetica Neue', Arial, sans-serif;
+  --dp-typography-body: 'Geist', 'Helvetica Neue', Arial, sans-serif;
+  --dp-typography-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+
+  --dp-gutter: clamp(20px, 4vw, 48px);
+  --dp-max: 1360px;
+  --dp-radius-panel: 6px;
+  --dp-radius-control: 4px;
+  --dp-motion-resolve: 460ms;
+  --dp-motion-interaction: 140ms;
+  --dp-motion-ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+/* Precision Light — an opening-up of the same system onto paper-white. */
+html.light {
+  color-scheme: light;
+
+  --dp-ground: 252 252 253;
+  --dp-panel: 255 255 255;
+  --dp-panel-elevated: 255 255 255;
+  --dp-panel-subtle: 243 244 246;
+  --dp-sunken: 246 247 249;
+  --dp-ink: 22 25 31;
+  --dp-ink-body: 69 76 88;
+  --dp-ink-muted: 108 115 128;
+  --dp-line: 221 224 230;
+  --dp-line-strong: 197 202 211;
+  --dp-signal: 8 122 71;
+  --dp-signal-soft: 230 245 236;
+  --dp-registration: 22 126 172;
+  --dp-registration-soft: 230 244 250;
+  --dp-registration-line: 184 214 231;
+  --dp-interference: 179 75 156;
+  --dp-sketch: 46 111 255;
+  --dp-inverse-ink: 255 255 255;
+  --dp-live: 17 106 97;
+  --dp-live-soft: 233 246 244;
+  --dp-live-line: 179 221 216;
+
+  --dp-sev-critical: 184 31 61;
+  --dp-sev-critical-soft: 253 238 241;
+  --dp-sev-critical-line: 231 182 192;
+  --dp-sev-high: 168 74 16;
+  --dp-sev-high-soft: 253 241 230;
+  --dp-sev-high-line: 240 201 164;
+  --dp-sev-medium: 138 100 18;
+  --dp-sev-medium-soft: 253 246 227;
+  --dp-sev-medium-line: 236 217 165;
+  --dp-sev-low: 15 98 141;
+  --dp-sev-low-soft: 234 244 251;
+  --dp-sev-low-line: 185 216 234;
+
+  --dp-btn-primary-bg: 22 25 31;
+  --dp-btn-primary-ink: 255 255 255;
+  --dp-hover: 12 18 28;
+
+  --dp-shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --dp-shadow-md: 0 2px 8px rgba(16, 24, 40, 0.06);
+  --dp-shadow-lg: 0 10px 28px rgba(16, 24, 40, 0.1);
 }
 
 * {
@@ -25,22 +127,26 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: var(--vx-bg);
-  background-image:
-    radial-gradient(ellipse at 15% -10%, rgba(0, 242, 254, 0.08), transparent 50%),
-    radial-gradient(ellipse at 95% 0%, rgba(37, 99, 235, 0.1), transparent 45%);
-  background-attachment: fixed;
-  color: var(--vx-text);
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
+  background-color: rgb(var(--dp-ground));
+  color: rgb(var(--dp-ink-body));
+  font-family: var(--dp-typography-body);
+  font-feature-settings: 'cv11';
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: rgb(var(--dp-ink));
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--dp-typography-mono);
 }
 
 ::-webkit-scrollbar {
@@ -51,35 +157,58 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #22304d;
-  border-radius: 999px;
-  border: 2px solid var(--vx-bg);
+  background: rgb(var(--dp-line-strong));
+  border-radius: 2px;
+  border: 2px solid rgb(var(--dp-ground));
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #31456b;
+  background: rgb(var(--dp-ink-muted) / 0.5);
 }
 
 ::selection {
-  background: rgba(0, 242, 254, 0.25);
-  color: #f8fafc;
+  background: rgb(var(--dp-signal) / 0.24);
+  color: rgb(var(--dp-ink));
 }
 
 :focus-visible {
-  outline: 2px solid var(--vx-cyan);
+  outline: 2px solid rgb(var(--dp-signal));
   outline-offset: 2px;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: rgb(var(--dp-signal));
+}
+
+/* Restrained theme cross-fade: colour properties only, for a moment. */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition:
+    background-color 180ms ease-out,
+    border-color 180ms ease-out,
+    color 180ms ease-out,
+    fill 180ms ease-out,
+    stroke 180ms ease-out !important;
 }
 
 @layer components {
   .vx-card {
-    @apply rounded-xl border border-veltrix-border bg-veltrix-card/85 shadow-card backdrop-blur-sm;
+    @apply rounded-panel border border-veltrix-border bg-veltrix-card;
+    box-shadow: var(--dp-shadow-panel);
   }
 
   .vx-panel {
-    @apply rounded-xl border border-veltrix-border bg-veltrix-surface/70 backdrop-blur-sm;
+    @apply rounded-panel border border-veltrix-border bg-veltrix-surface;
+  }
+
+  .vx-display {
+    @apply text-[30px] font-medium leading-[1.1] tracking-[-0.02em] text-slate-100 sm:text-[34px];
   }
 
   .vx-label {
-    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-veltrix-textMuted;
+    @apply text-[11px] font-medium uppercase tracking-[0.12em] text-veltrix-textMeta;
   }
 
   .vx-mono {
@@ -87,55 +216,117 @@ body {
   }
 
   .vx-hairline {
-    @apply border-b border-veltrix-border/70;
+    @apply border-b border-veltrix-border;
+  }
+
+  /* Restrained vertical signal rail for a meaningful boundary. */
+  .vx-rail {
+    position: relative;
+    padding-left: 14px;
+  }
+
+  .vx-rail::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 3px;
+    bottom: 3px;
+    width: 2px;
+    background: rgb(var(--dp-signal));
+    opacity: 0.75;
+  }
+
+  /* Small cyan registration ticks — rare technical detail, never functional. */
+  .vx-register {
+    position: relative;
+  }
+
+  .vx-register::before,
+  .vx-register::after {
+    content: '';
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-color: rgb(var(--dp-registration));
+    opacity: 0.5;
+  }
+
+  .vx-register::before {
+    top: 0;
+    left: 0;
+    border-left: 1px solid;
+    border-top: 1px solid;
+  }
+
+  .vx-register::after {
+    bottom: 0;
+    right: 0;
+    border-right: 1px solid;
+    border-bottom: 1px solid;
   }
 
   .vx-button {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-control px-3.5 py-2 text-[13px] font-medium transition-colors duration-[140ms] ease-out disabled:cursor-not-allowed disabled:opacity-45;
   }
 
+  /* Primary uses the theme's primary surface: light ink in dark, dark ink in light. */
   .vx-button-primary {
-    @apply vx-button bg-gradient-to-r from-veltrix-cyan to-veltrix-blue text-veltrix-chrome shadow-glow hover:brightness-110 active:scale-[0.99];
+    @apply vx-button;
+    background-color: rgb(var(--dp-btn-primary-bg));
+    color: rgb(var(--dp-btn-primary-ink));
+  }
+
+  .vx-button-primary:hover {
+    background-color: rgb(var(--dp-btn-primary-bg) / 0.88);
   }
 
   .vx-button-secondary {
-    @apply vx-button border border-veltrix-border bg-veltrix-surface text-slate-200 hover:border-slate-600 hover:bg-veltrix-elevated;
+    @apply vx-button border border-veltrix-border bg-veltrix-elevated text-slate-200 hover:border-veltrix-borderStrong hover:bg-veltrix-subtle;
   }
 
   .vx-button-ghost {
-    @apply vx-button text-slate-300 hover:bg-white/5 hover:text-white;
+    @apply vx-button text-slate-400 hover:bg-veltrix-subtle hover:text-slate-100;
   }
 
+  /* Destructive never borrows the signal color. */
   .vx-button-danger {
-    @apply vx-button border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20;
+    @apply vx-button border border-rose-500/40 bg-rose-500/10 text-rose-300 hover:border-rose-500/60 hover:bg-rose-500/20;
   }
 
   .vx-input {
-    @apply w-full rounded-lg border border-veltrix-border bg-veltrix-chrome/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-veltrix-cyan/60 focus:outline-none focus:ring-1 focus:ring-veltrix-cyan/40;
+    @apply w-full rounded-control border border-veltrix-border bg-veltrix-chrome px-3 py-2 text-[13px] text-slate-100 placeholder:text-slate-500 focus:border-veltrix-cyan/60 focus:outline-none disabled:cursor-not-allowed disabled:bg-veltrix-surface disabled:text-slate-500;
   }
 
   .vx-chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide;
+    @apply inline-flex items-center gap-1.5 rounded-control border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em];
   }
 
   .vx-table {
-    @apply w-full border-separate border-spacing-0 text-left text-sm;
+    @apply w-full border-separate border-spacing-0 text-left text-[13px];
   }
 
   .vx-table thead th {
-    @apply sticky top-0 z-10 border-b border-veltrix-border bg-veltrix-surface/95 px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 backdrop-blur;
+    @apply sticky top-0 z-10 border-b border-veltrix-border bg-veltrix-subtle px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.14em] text-veltrix-textMeta;
   }
 
   .vx-table tbody td {
-    @apply border-b border-veltrix-border/50 px-3 py-3 text-slate-300;
+    @apply border-b border-veltrix-border px-3 py-3 align-middle text-slate-300;
   }
 
   .vx-table tbody tr {
-    @apply transition-colors hover:bg-white/[0.025];
+    @apply transition-colors;
+  }
+
+  .vx-table tbody tr:hover {
+    background-color: rgb(var(--dp-hover) / 0.035);
+  }
+
+  html.light .vx-table tbody tr:hover {
+    background-color: rgb(var(--dp-panel-subtle));
   }
 
   .vx-skeleton {
-    @apply relative overflow-hidden rounded-md bg-white/5;
+    @apply relative overflow-hidden rounded-control bg-veltrix-border/50;
   }
 
   .vx-skeleton::after {
@@ -144,41 +335,157 @@ body {
     background-image: linear-gradient(
       90deg,
       transparent,
-      rgba(255, 255, 255, 0.06),
+      rgb(var(--dp-ink) / 0.06),
       transparent
     );
     background-size: 500px 100%;
   }
 
+  .vx-row-hover:hover {
+    background-color: rgb(var(--dp-hover) / 0.035);
+  }
+
+  html.light .vx-row-hover:hover {
+    background-color: rgb(var(--dp-panel-subtle));
+  }
+
   .vx-scroll {
     scrollbar-width: thin;
-    scrollbar-color: #22304d transparent;
+    scrollbar-color: rgb(var(--dp-line-strong)) transparent;
   }
 }
 
 @layer utilities {
+  /* Subtle technical grid — reserved for editorial/stage surfaces. */
   .vx-grid-bg {
     background-image:
-      linear-gradient(rgba(30, 43, 69, 0.28) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(30, 43, 69, 0.28) 1px, transparent 1px);
-    background-size: 44px 44px;
-    mask-image: linear-gradient(to bottom, black, transparent 85%);
+      linear-gradient(rgb(var(--dp-line) / 0.5) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--dp-line) / 0.5) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: linear-gradient(to bottom, black, transparent 90%);
   }
 
+  .vx-stage {
+    background-image: radial-gradient(
+      ellipse at 50% -20%,
+      rgb(var(--dp-ink) / 0.055),
+      transparent 60%
+    );
+  }
+
+  .vx-content {
+    width: 100%;
+    max-width: var(--dp-max);
+    margin-inline: auto;
+  }
+
+  .vx-gutter {
+    padding-inline: var(--dp-gutter);
+  }
+
+  /* Kept for compatibility: the system does not glow text. */
   .vx-text-glow {
-    text-shadow: 0 0 24px rgba(0, 242, 254, 0.35);
+    text-shadow: none;
   }
 
+  /* Kept for compatibility: flattened to a hairline panel. */
   .vx-border-gradient {
-    background:
-      linear-gradient(var(--vx-card), var(--vx-card)) padding-box,
-      linear-gradient(135deg, rgba(0, 242, 254, 0.45), rgba(37, 99, 235, 0.15), rgba(0, 242, 254, 0.05))
-        border-box;
-    border: 1px solid transparent;
+    border: 1px solid rgb(var(--dp-line));
+    background: rgb(var(--dp-panel));
   }
 
   .vx-severity-bar {
-    box-shadow: 0 0 12px currentColor;
+    box-shadow: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Blueprint Pencil Reveal
+ *
+ * The sketch is a real SVG drawn over the section's measured box. Each stroke
+ * carries `pathLength="1"` so it can draw itself with a normalised dash offset,
+ * and a per-stroke `--k` factor so strokes finish at slightly different times —
+ * that variance is what makes it read as pencil rather than a progress bar.
+ * ------------------------------------------------------------------------ */
+.vx-sketch-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  color: rgb(var(--dp-sketch));
+}
+
+.vx-sketch-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.vx-sketch-stroke.is-faint {
+  opacity: 0.45;
+}
+
+.vx-sketch-stroke.is-tick {
+  opacity: 0.55;
+  stroke-width: 1;
+}
+
+[data-reveal='on'] .vx-sketch-stroke {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: vxSketchDraw calc(var(--vx-draw) * var(--k, 1)) linear var(--vx-draw-delay) both;
+}
+
+[data-reveal='on'] .vx-sketch-layer {
+  animation: vxSketchFade var(--dp-motion-resolve) ease-out var(--vx-resolve-delay) both;
+}
+
+[data-reveal='on'] .vx-reveal-body {
+  animation: vxResolve var(--dp-motion-resolve) var(--dp-motion-ease) var(--vx-resolve-delay) both;
+}
+
+[data-reveal='on'] .vx-reveal-body *:focus-visible {
+  outline-offset: 2px;
+}
+
+/* While the blueprint is being drafted the real content is inert. */
+[data-reveal='on'] .vx-reveal-body {
+  pointer-events: none;
+}
+
+[data-reveal='on'].is-settled .vx-reveal-body {
+  pointer-events: auto;
+}
+
+@keyframes vxSketchDraw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes vxSketchFade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes vxResolve {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -190,5 +497,9 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  [data-reveal='on'] .vx-sketch-layer {
+    display: none;
   }
 }

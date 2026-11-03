@@ -219,7 +219,7 @@ export function IntegrationManagement() {
       )}
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#0D1527] border border-slate-800 p-5 rounded-xl shadow-lg">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-veltrix-card border border-slate-800 p-5 rounded-xl shadow-lg">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
             <Layers className="w-6 h-6 text-cyan-400" />
@@ -241,7 +241,7 @@ export function IntegrationManagement() {
           </button>
           <button
             onClick={() => setIsRegisterModalOpen(true)}
-            className="flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 rounded-lg shadow-md shadow-cyan-500/20 transition-all"
+            className="flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-veltrix-inverse bg-veltrix-textBright hover:bg-veltrix-textBright/85 rounded-control transition-colors"
           >
             <Plus className="w-4 h-4" />
             <span>Register Integration</span>
@@ -265,7 +265,7 @@ export function IntegrationManagement() {
 
       {/* Loading State */}
       {loading && !error && (
-        <div className="p-12 text-center space-y-3 bg-[#0D1527] border border-slate-800 rounded-xl">
+        <div className="p-12 text-center space-y-3 bg-veltrix-card border border-slate-800 rounded-xl">
           <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
           <p className="text-sm text-slate-400">Loading integrations from API Gateway...</p>
         </div>
@@ -273,7 +273,7 @@ export function IntegrationManagement() {
 
       {/* Empty State */}
       {!loading && !error && integrations.length === 0 && (
-        <div className="p-12 text-center space-y-4 bg-[#0D1527] border border-slate-800 rounded-xl">
+        <div className="p-12 text-center space-y-4 bg-veltrix-card border border-slate-800 rounded-xl">
           <Layers className="w-12 h-12 text-slate-600 mx-auto" />
           <div className="space-y-1">
             <h3 className="text-base font-semibold text-white">No Telemetry Integrations Connected</h3>
@@ -283,7 +283,7 @@ export function IntegrationManagement() {
           </div>
           <button
             onClick={() => setIsRegisterModalOpen(true)}
-            className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg"
+            className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-veltrix-inverse bg-veltrix-textBright hover:bg-veltrix-textBright/85 rounded-control"
           >
             <Plus className="w-4 h-4" />
             <span>Register First Integration</span>
@@ -293,7 +293,7 @@ export function IntegrationManagement() {
 
       {/* Integrations Table / List */}
       {!loading && !error && integrations.length > 0 && (
-        <div className="bg-[#0D1527] border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+        <div className="bg-veltrix-card border border-slate-800 rounded-xl overflow-hidden shadow-lg">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-slate-300">
               <thead className="bg-slate-900/80 border-b border-slate-800 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -409,7 +409,7 @@ export function IntegrationManagement() {
       {/* Modal: Register Integration */}
       {isRegisterModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0D1527] border border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
+          <div className="bg-veltrix-card border border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-lg font-bold text-white flex items-center space-x-2">
                 <Layers className="w-5 h-5 text-cyan-400" />
@@ -494,7 +494,7 @@ export function IntegrationManagement() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 font-semibold bg-cyan-400 hover:bg-cyan-300 text-slate-950 rounded-lg shadow-md transition-all"
+                  className="px-5 py-2 font-semibold bg-veltrix-cyan hover:bg-veltrix-cyan/85 text-veltrix-inverse rounded-lg shadow-md transition-all"
                 >
                   Create Integration
                 </button>
@@ -507,7 +507,7 @@ export function IntegrationManagement() {
       {/* Secret API Key Reveal Dialog */}
       {newSecretReveal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0D1527] border border-amber-600/60 rounded-xl max-w-lg w-full p-6 space-y-4 shadow-2xl relative">
+          <div className="bg-veltrix-card border border-amber-600/60 rounded-xl max-w-lg w-full p-6 space-y-4 shadow-2xl relative">
             <div className="flex items-center space-x-3">
               <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0">
                 <Key className="w-5 h-5 text-amber-400" />
@@ -542,7 +542,7 @@ export function IntegrationManagement() {
             <div className="pt-2 flex justify-end">
               <button
                 onClick={() => setNewSecretReveal(null)}
-                className="px-5 py-2 text-xs font-semibold bg-cyan-400 hover:bg-cyan-300 text-slate-950 rounded-lg"
+                className="px-5 py-2 text-xs font-semibold bg-veltrix-cyan hover:bg-veltrix-cyan/85 text-veltrix-inverse rounded-lg"
               >
                 I have securely saved this key
               </button>

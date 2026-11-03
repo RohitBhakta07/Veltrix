@@ -165,8 +165,9 @@ export function titleCase(value?: string | null): string {
 }
 
 export function scoreColor(score: number): string {
-  if (score >= 75) return '#FF4D6D';
-  if (score >= 50) return '#FF8A3D';
-  if (score >= 25) return '#FFC857';
-  return '#2DD4A7';
+  // Theme-aware severity channels: readable on graphite and on paper.
+  if (score >= 75) return 'rgb(var(--dp-sev-critical))';
+  if (score >= 50) return 'rgb(var(--dp-sev-high))';
+  if (score >= 25) return 'rgb(var(--dp-sev-medium))';
+  return 'rgb(var(--dp-sev-low))';
 }

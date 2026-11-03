@@ -104,9 +104,9 @@ export function WebsiteAttackMonitoring() {
       case 'CRITICAL':
         return <span className="px-2 py-0.5 text-xs font-bold rounded bg-rose-950/80 text-rose-400 border border-rose-800">CRITICAL</span>;
       case 'HIGH':
-        return <span className="px-2 py-0.5 text-xs font-bold rounded bg-amber-950/80 text-amber-400 border border-amber-800">HIGH</span>;
+        return <span className="px-2 py-0.5 text-xs font-semibold rounded-[2px] bg-orange-500/10 text-orange-300 border border-orange-500/40">HIGH</span>;
       case 'MEDIUM':
-        return <span className="px-2 py-0.5 text-xs font-semibold rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800">MEDIUM</span>;
+        return <span className="px-2 py-0.5 text-xs font-semibold rounded-[2px] bg-amber-400/10 text-amber-200 border border-amber-400/40">MEDIUM</span>;
       default:
         return <span className="px-2 py-0.5 text-xs font-medium rounded bg-slate-800 text-slate-300 border border-slate-700">LOW</span>;
     }
@@ -128,7 +128,7 @@ export function WebsiteAttackMonitoring() {
   const getScoreColor = (score: number) => {
     if (score >= 75) return 'text-rose-400 border-rose-500 bg-rose-950/20';
     if (score >= 50) return 'text-amber-400 border-amber-500 bg-amber-950/20';
-    if (score >= 25) return 'text-cyan-400 border-cyan-500 bg-cyan-950/20';
+    if (score >= 25) return 'text-amber-300 border-amber-500/50 bg-amber-500/10';
     return 'text-emerald-400 border-emerald-500 bg-emerald-950/20';
   };
 

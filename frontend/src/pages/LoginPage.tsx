@@ -73,32 +73,26 @@ export function LoginPage() {
     <div className="relative grid min-h-screen lg:grid-cols-[1.1fr_0.9fr]">
       {/* Narrative panel */}
       <div className="relative hidden flex-col justify-between overflow-hidden border-r border-veltrix-border/70 bg-veltrix-chrome p-10 lg:flex">
-        <div className="pointer-events-none absolute inset-0 bg-vx-grid opacity-40" aria-hidden />
-        <div
-          className="pointer-events-none absolute -left-24 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]"
-          aria-hidden
-        />
+        <div className="pointer-events-none absolute inset-0 bg-vx-grid opacity-25" aria-hidden />
 
         <div className="relative">
           <div className="flex items-center gap-3">
-            <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-cyan-400/25 to-blue-600/20 ring-1 ring-inset ring-cyan-400/30">
-              <ShieldCheck className="h-5 w-5 text-cyan-300" />
+            <div className="grid h-10 w-10 place-items-center rounded-control border border-veltrix-border bg-veltrix-elevated">
+              <ShieldCheck className="h-[18px] w-[18px] text-veltrix-cyan" />
             </div>
             <div>
-              <div className="text-base font-black tracking-[0.3em] text-white">VELTRIX</div>
+              <div className="text-[13px] font-semibold tracking-[0.28em] text-white">VELTRIX</div>
               <div className="text-[10px] uppercase tracking-[0.22em] text-slate-500">
                 Autonomous threat detection
               </div>
             </div>
           </div>
 
-          <h1 className="mt-14 max-w-lg text-[38px] font-bold leading-[1.1] tracking-tight text-white">
+          <h1 className="mt-14 max-w-lg text-[40px] font-medium leading-[1.06] tracking-[-0.025em] text-white">
             See the attack
-            <span className="block bg-gradient-to-r from-cyan-300 via-sky-300 to-blue-400 bg-clip-text text-transparent">
-              before it lands.
-            </span>
+            <span className="block text-veltrix-cyan">before it lands.</span>
           </h1>
-          <p className="mt-4 max-w-md text-sm leading-relaxed text-slate-400">
+          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-veltrix-textMuted">
             A unified SOC console for authorized website telemetry: ingest, detect, correlate,
             respond and prove it happened — end to end, in one tenant-scoped surface.
           </p>
@@ -109,9 +103,9 @@ export function LoginPage() {
               return (
                 <div
                   key={capability.title}
-                  className="rounded-xl border border-veltrix-border/80 bg-veltrix-surface/50 p-3.5 backdrop-blur-sm"
+                  className="rounded-panel border border-veltrix-border bg-veltrix-card p-3.5"
                 >
-                  <Icon className="h-4 w-4 text-cyan-300" />
+                  <Icon className="h-4 w-4 text-veltrix-cyan" />
                   <div className="mt-2 text-[12px] font-semibold text-slate-100">
                     {capability.title}
                   </div>
@@ -126,7 +120,7 @@ export function LoginPage() {
 
         <div className="relative mt-10 flex items-center gap-4 text-[10px] text-slate-600">
           <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-emerald-400" />
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden />
             {platform.data ? `${platform.data.data.storageMode} engine online` : 'engine status pending'}
           </span>
           <span className="h-3 w-px bg-slate-800" />
@@ -135,21 +129,23 @@ export function LoginPage() {
       </div>
 
       {/* Auth panel */}
-      <div className="relative flex items-center justify-center px-5 py-12 sm:px-10">
+      <div className="vx-stage relative flex items-center justify-center px-5 py-12 sm:px-10">
         <div className="w-full max-w-sm">
           <div className="mb-8 flex items-center gap-3 lg:hidden">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-500/10 ring-1 ring-inset ring-cyan-400/30">
-              <ShieldCheck className="h-5 w-5 text-cyan-300" />
+            <div className="grid h-9 w-9 place-items-center rounded-control border border-veltrix-border bg-veltrix-elevated">
+              <ShieldCheck className="h-4 w-4 text-veltrix-cyan" />
             </div>
-            <div className="text-sm font-black tracking-[0.3em] text-white">VELTRIX</div>
+            <div className="text-[13px] font-semibold tracking-[0.28em] text-white">VELTRIX</div>
           </div>
 
           <div className="vx-card p-6">
             <div className="flex items-center gap-2">
-              <Lock className="h-3.5 w-3.5 text-cyan-300" />
-              <span className="vx-label text-cyan-300/80">Analyst access</span>
+              <Lock className="h-3.5 w-3.5 text-veltrix-cyan" />
+              <span className="vx-label">Analyst access</span>
             </div>
-            <h2 className="mt-2 text-xl font-bold tracking-tight text-white">Sign in to console</h2>
+            <h2 className="mt-2 text-[20px] font-medium tracking-[-0.01em] text-white">
+              Sign in to console
+            </h2>
             <p className="mt-1 text-xs text-slate-500">
               Tenant-scoped session with role-based permissions.
             </p>
@@ -238,16 +234,16 @@ export function LoginPage() {
                       // Handled by the auth banner.
                     }
                   }}
-                  className="group flex w-full items-center gap-3 rounded-lg border border-veltrix-border bg-veltrix-surface/60 px-3 py-2.5 text-left transition hover:border-cyan-500/40 hover:bg-cyan-500/[0.06] disabled:opacity-60"
+                  className="group flex w-full items-center gap-3 rounded-control border border-veltrix-border bg-veltrix-chrome px-3 py-2.5 text-left transition-colors hover:border-veltrix-borderStrong hover:bg-veltrix-elevated disabled:opacity-60"
                 >
-                  <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
+                  <Sparkles className="h-3.5 w-3.5 text-slate-500 transition-colors group-hover:text-veltrix-cyan" />
                   <span className="min-w-0 flex-1">
                     <span className="block text-[12px] font-semibold text-slate-100">
                       {role.label}
                     </span>
                     <span className="block truncate text-[10px] text-slate-500">{role.hint}</span>
                   </span>
-                  <ArrowRight className="h-3.5 w-3.5 text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-cyan-300" />
+                  <ArrowRight className="h-3.5 w-3.5 text-slate-600 transition-colors group-hover:text-veltrix-cyan" />
                 </button>
               ))}
             </div>

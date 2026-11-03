@@ -202,7 +202,7 @@ export function WebsiteInventory() {
       )}
 
       {/* Header and Controls */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#0D1527] border border-slate-800 p-5 rounded-xl shadow-lg">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-veltrix-card border border-slate-800 p-5 rounded-xl shadow-lg">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center space-x-2">
             <Globe className="w-6 h-6 text-cyan-400" />
@@ -224,7 +224,7 @@ export function WebsiteInventory() {
           </button>
           <button
             onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 rounded-lg shadow-md shadow-cyan-500/20 transition-all"
+            className="flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-veltrix-inverse bg-veltrix-textBright hover:bg-veltrix-textBright/85 rounded-control transition-colors"
           >
             <Plus className="w-4 h-4" />
             <span>Register Website</span>
@@ -248,7 +248,7 @@ export function WebsiteInventory() {
 
       {/* Loading State */}
       {loading && !error && (
-        <div className="p-12 text-center space-y-3 bg-[#0D1527] border border-slate-800 rounded-xl">
+        <div className="p-12 text-center space-y-3 bg-veltrix-card border border-slate-800 rounded-xl">
           <RefreshCw className="w-8 h-8 text-cyan-400 animate-spin mx-auto" />
           <p className="text-sm text-slate-400">Loading website inventory from API Gateway...</p>
         </div>
@@ -256,7 +256,7 @@ export function WebsiteInventory() {
 
       {/* Empty State */}
       {!loading && !error && sites.length === 0 && (
-        <div className="p-12 text-center space-y-4 bg-[#0D1527] border border-slate-800 rounded-xl">
+        <div className="p-12 text-center space-y-4 bg-veltrix-card border border-slate-800 rounded-xl">
           <Globe className="w-12 h-12 text-slate-600 mx-auto" />
           <div className="space-y-1">
             <h3 className="text-base font-semibold text-white">No Website Assets Registered</h3>
@@ -266,7 +266,7 @@ export function WebsiteInventory() {
           </div>
           <button
             onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg"
+            className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold text-veltrix-inverse bg-veltrix-textBright hover:bg-veltrix-textBright/85 rounded-control"
           >
             <Plus className="w-4 h-4" />
             <span>Add Your First Website</span>
@@ -284,7 +284,7 @@ export function WebsiteInventory() {
             return (
               <div
                 key={site.siteId}
-                className="bg-[#0D1527] border border-slate-800 hover:border-slate-700 rounded-xl p-5 space-y-4 transition-all shadow-md relative overflow-hidden"
+                className="bg-veltrix-card border border-slate-800 hover:border-slate-700 rounded-xl p-5 space-y-4 transition-all shadow-md relative overflow-hidden"
               >
                 {/* Header row */}
                 <div className="flex items-start justify-between">
@@ -445,7 +445,7 @@ export function WebsiteInventory() {
       {/* Modal: Register Website Asset */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0D1527] border border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
+          <div className="bg-veltrix-card border border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-lg font-bold text-white flex items-center space-x-2">
                 <Globe className="w-5 h-5 text-cyan-400" />
@@ -562,7 +562,7 @@ export function WebsiteInventory() {
       {/* Modal: Domain Ownership Verification Details & Trigger */}
       {selectedSiteForVerify && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0D1527] border border-slate-800 rounded-xl max-w-xl w-full p-6 space-y-5 shadow-2xl relative">
+          <div className="bg-veltrix-card border border-slate-800 rounded-xl max-w-xl w-full p-6 space-y-5 shadow-2xl relative">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
                 <h3 className="text-lg font-bold text-white flex items-center space-x-2">

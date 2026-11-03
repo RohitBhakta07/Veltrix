@@ -28,6 +28,9 @@ import {
   titleCase,
   type Tone,
 } from '../../lib/format';
+import { useSectionReveal } from '../../reveal/RevealProvider';
+import { REVEAL_TIMING } from '../../reveal/timing';
+import { useCountUp } from '../../reveal/useCountUp';
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
@@ -77,13 +80,13 @@ export function Button({
 // --- Badges -----------------------------------------------------------------
 
 const toneStyles: Record<Tone, string> = {
-  critical: 'border-rose-500/35 bg-rose-500/10 text-rose-300',
-  high: 'border-orange-500/35 bg-orange-500/10 text-orange-300',
-  medium: 'border-amber-400/35 bg-amber-400/10 text-amber-300',
-  low: 'border-sky-500/35 bg-sky-500/10 text-sky-300',
-  success: 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300',
-  neutral: 'border-slate-600/50 bg-slate-700/20 text-slate-300',
-  info: 'border-cyan-500/35 bg-cyan-500/10 text-cyan-300',
+  critical: 'border-rose-500/40 bg-rose-500/10 text-rose-300',
+  high: 'border-orange-500/40 bg-orange-500/10 text-orange-300',
+  medium: 'border-amber-400/40 bg-amber-400/10 text-amber-200',
+  low: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+  success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+  neutral: 'border-veltrix-border bg-veltrix-elevated text-slate-400',
+  info: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
 };
 
 const dotStyles: Record<Tone, string> = {
@@ -186,7 +189,7 @@ export function Card({
     <div
       className={cn(
         'vx-card',
-        interactive && 'transition-colors hover:border-slate-600/80',
+        interactive && 'transition-colors hover:border-veltrix-borderStrong',
         className
       )}
       {...props}
@@ -208,12 +211,19 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4 border-b border-veltrix-border/70 pb-5 sm:flex-row sm:items-end sm:justify-between">
-      <div className="min-w-0 space-y-1.5">
-        {eyebrow ? <div className="vx-label text-veltrix-cyan/80">{eyebrow}</div> : null}
-        <h1 className="truncate text-2xl font-bold tracking-tight text-white">{title}</h1>
+    <div className="flex flex-col gap-4 border-b border-veltrix-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+      <div className="vx-rail min-w-0 space-y-2">
+        {eyebrow ? (
+          <div className="vx-label flex items-center gap-1.5 text-veltrix-cyan">
+            <span className="h-1 w-1 bg-veltrix-cyan" aria-hidden />
+            {eyebrow}
+          </div>
+        ) : null}
+        <h1 className="vx-display truncate">{title}</h1>
         {description ? (
-          <p className="max-w-3xl text-sm leading-relaxed text-slate-400">{description}</p>
+          <p className="max-w-3xl text-[13px] leading-relaxed text-veltrix-textMuted">
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
@@ -235,8 +245,10 @@ export function SectionHeader({
   return (
     <div className={cn('flex items-start justify-between gap-4', className)}>
       <div>
-        <h2 className="text-sm font-semibold tracking-wide text-slate-100">{title}</h2>
-        {description ? <p className="mt-0.5 text-xs text-slate-500">{description}</p> : null}
+        <h2 className="text-[13px] font-medium text-slate-100">{title}</h2>
+        {description ? (
+          <p className="mt-0.5 text-[11px] leading-relaxed text-veltrix-textMeta">{description}</p>
+        ) : null}
       </div>
       {action}
     </div>
@@ -253,6 +265,8 @@ export function KpiTile({
   tone = 'info',
   trend,
   onClick,
+  countTo,
+  formatCount,
 }: {
   label: string;
   value: string | number;
@@ -261,15 +275,31 @@ export function KpiTile({
   tone?: Tone;
   trend?: string;
   onClick?: () => void;
+  /** Real backend value; the displayed figure counts up as the region resolves. */
+  countTo?: number;
+  formatCount?: (value: number) => string;
 }) {
+  const section = useSectionReveal();
+  const animated = useCountUp(countTo ?? null, {
+    enabled: section.active,
+    delay: section.resolveDelay,
+    duration: REVEAL_TIMING.countUp,
+    resetKey: section.run,
+  });
+
+  const display =
+    countTo !== undefined && section.active
+      ? (formatCount ?? ((n: number) => String(Math.round(n))))(animated)
+      : value;
+
   const accent: Record<Tone, string> = {
-    critical: 'text-rose-400 bg-rose-500/10 border-rose-500/20',
-    high: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
-    medium: 'text-amber-300 bg-amber-400/10 border-amber-400/20',
-    low: 'text-sky-300 bg-sky-500/10 border-sky-500/20',
-    success: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
-    neutral: 'text-slate-300 bg-slate-500/10 border-slate-500/20',
-    info: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20',
+    critical: 'text-rose-400 bg-rose-500/10 border-rose-500/25',
+    high: 'text-orange-300 bg-orange-500/10 border-orange-500/25',
+    medium: 'text-amber-300 bg-amber-400/10 border-amber-400/25',
+    low: 'text-sky-300 bg-sky-500/10 border-sky-500/25',
+    success: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25',
+    neutral: 'text-slate-400 bg-white/[0.04] border-veltrix-border',
+    info: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/25',
   };
 
   return (
@@ -279,18 +309,18 @@ export function KpiTile({
       disabled={!onClick}
       className={cn(
         'vx-card group relative overflow-hidden p-4 text-left',
-        onClick && 'hover:border-cyan-500/30 hover:shadow-glow'
+        onClick && 'hover:border-veltrix-borderStrong'
       )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="vx-label">{label}</div>
-          <div className="mt-2 text-2xl font-bold tabular-nums tracking-tight text-white">
-            {value}
+          <div className="mt-2 font-mono text-[24px] font-medium tabular-nums tracking-[-0.02em] text-slate-100">
+            {display}
           </div>
         </div>
         {Icon ? (
-          <span className={cn('rounded-lg border p-2', accent[tone])}>
+          <span className={cn('rounded-control border p-1.5', accent[tone])}>
             <Icon className="h-4 w-4" />
           </span>
         ) : null}
@@ -318,7 +348,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-      <div className="rounded-2xl border border-veltrix-border bg-veltrix-surface/70 p-4 text-slate-500">
+      <div className="rounded-panel border border-veltrix-border bg-veltrix-surface p-4 text-slate-500">
         <Icon className="h-7 w-7" />
       </div>
       <div>
@@ -345,7 +375,7 @@ export function ErrorState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-      <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300">
+      <div className="rounded-panel border border-rose-500/30 bg-rose-500/10 p-4 text-rose-300">
         <ShieldAlert className="h-7 w-7" />
       </div>
       <div>
@@ -413,13 +443,13 @@ export function Modal({
   const widths = { sm: 'max-w-md', md: 'max-w-xl', lg: 'max-w-3xl', xl: 'max-w-5xl' };
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm sm:p-8">
+    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/80 p-4 sm:p-8">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
         className={cn(
-          'my-auto w-full overflow-hidden rounded-2xl border border-veltrix-border bg-veltrix-card shadow-card animate-fade-up',
+          'my-auto w-full overflow-hidden rounded-panel border border-veltrix-border bg-veltrix-card shadow-card animate-fade-up',
           widths[size]
         )}
       >
@@ -475,7 +505,7 @@ export function Drawer({
 
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex justify-end bg-black/60 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[100] flex justify-end bg-black/75">
       <div
         role="dialog"
         aria-modal="true"
@@ -518,22 +548,22 @@ export function Tabs({
   onChange: (id: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1 rounded-lg border border-veltrix-border bg-veltrix-surface/60 p-1">
+    <div className="flex flex-wrap items-center gap-1 rounded-control border border-veltrix-border bg-veltrix-surface p-1">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           type="button"
           onClick={() => onChange(tab.id)}
           className={cn(
-            'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition',
+            'flex items-center gap-1.5 rounded-control px-3 py-1.5 text-[12px] font-medium transition-colors',
             value === tab.id
-              ? 'bg-cyan-500/10 text-cyan-300 shadow-[inset_0_0_0_1px_rgba(0,242,254,0.25)]'
+              ? 'bg-veltrix-elevated text-white shadow-[inset_0_-2px_0_0_var(--dp-color-signal)]'
               : 'text-slate-400 hover:text-slate-200'
           )}
         >
           {tab.label}
           {typeof tab.count === 'number' ? (
-            <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+            <span className="rounded-[2px] bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-slate-400">
               {tab.count}
             </span>
           ) : null}
@@ -584,8 +614,8 @@ export function Toggle({
       className={cn(
         'relative h-5 w-9 rounded-full border transition disabled:opacity-50',
         checked
-          ? 'border-cyan-400/50 bg-cyan-500/30'
-          : 'border-slate-600 bg-slate-800'
+          ? 'border-cyan-500/60 bg-cyan-500/25'
+          : 'border-veltrix-borderStrong bg-veltrix-elevated'
       )}
     >
       <span
@@ -614,7 +644,7 @@ export function ProgressBar({
     low: 'bg-sky-400',
     success: 'bg-emerald-400',
     neutral: 'bg-slate-400',
-    info: 'bg-cyan-400',
+    info: 'bg-veltrix-cyan',
   };
   return (
     <div className={cn('h-1.5 w-full overflow-hidden rounded-full bg-white/5', className)}>
@@ -640,8 +670,8 @@ export function CopyField({ value, label }: { value: string; label?: string }) {
   return (
     <div className="space-y-1">
       {label ? <div className="vx-label">{label}</div> : null}
-      <div className="flex items-center gap-2 rounded-lg border border-veltrix-border bg-veltrix-chrome/70 px-3 py-2">
-        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-cyan-200">{value}</code>
+      <div className="flex items-center gap-2 rounded-control border border-veltrix-border bg-veltrix-chrome px-3 py-2">
+        <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">{value}</code>
         <button
           type="button"
           onClick={copy}
