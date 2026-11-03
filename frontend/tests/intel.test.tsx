@@ -65,3 +65,4 @@ describe('IntelPage Component', () => {
     expect(html).toContain('Total Indicators');
   });
 });
+
