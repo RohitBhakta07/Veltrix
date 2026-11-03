@@ -805,6 +805,30 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       }
     });
 
+    it('handles duplicate cookie attributes safely without errors or false positives', () => {
+      const parsed = new CookieFlagsRule().parseSetCookieString(
+        'session=abc; SameSite=Lax; SameSite=Strict; Secure; HttpOnly; Path=/'
+      );
+
+      expect(parsed?.name).toBe('session');
+      expect(parsed?.duplicateAttributes).toContain('samesite');
+      expect(parsed?.secure).toBe(true);
+      expect(parsed?.httpOnly).toBe(true);
+
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        setCookies: [
+          'session=abc; SameSite=Lax; SameSite=Strict; Secure; HttpOnly; Path=/',
+        ],
+      });
+
+      const findings = new CookieFlagsRule().evaluate(page);
+      // Secure and HttpOnly are both present, SameSite resolved safely without throwing
+      expect(findings.some((f) => f.title.includes("Missing 'Secure'"))).toBe(false);
+      expect(findings.some((f) => f.title.includes("Missing 'HttpOnly'"))).toBe(false);
+      expect(findings.some((f) => f.title.includes("Missing 'SameSite'"))).toBe(false);
+    });
+
     it('accepts valid SameSite=Lax and SameSite=Strict without findings', () => {
       const pageLax = createMockCrawledPage({
         url: 'https://example.com/',
@@ -1529,6 +1553,117 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       expect(untrustedFinding?.severity).toBe('HIGH');
       expect(untrustedFinding?.confidence).toBe('CONFIRMED');
       expect(untrustedFinding?.evidence.authorizationError).toBeDefined();
+    });
+
+    it('strictly enforces aggregate scan-level body retention budget across entire crawl', async () => {
+      const testHttpServer = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        const pageNum = req.url?.replace('/', '') || '0';
+        const nextNum = parseInt(pageNum, 10) + 1;
+        const bodyContent = `<html><body><a href="/${nextNum}">Next</a><p>${'B'.repeat(10 * 1024)}</p></body></html>`;
+        res.end(bodyContent);
+      });
+
+      let testHttpPort = 0;
+      await new Promise<void>((resolve) => {
+        testHttpServer.listen(0, '127.0.0.1', () => {
+          testHttpPort = (testHttpServer.address() as net.AddressInfo).port;
+          resolve();
+        });
+      });
+
+      try {
+        const client = new SafeHttpClient({ allowLoopbackForTesting: true });
+        const context = await createAuthorizedScanScopeContext({
+          orgId: 'org-budget',
+          scanId: 'scan-budget',
+          siteId: 'site-budget',
+          primaryDomain: '127.0.0.1',
+          approvedSubdomains: [],
+          status: 'VERIFIED',
+          scanBlocked: false,
+          expiresAt: Date.now() + 86400000,
+          allowedPorts: [testHttpPort],
+        });
+
+        // Configure a tight aggregate budget of 15 KB (page 0 uses ~10KB, page 1 uses ~5KB, pages 2 & 3 get 0)
+        const maxAgg = 15 * 1024;
+        const crawler = new BoundedCrawler(
+          context,
+          client,
+          {
+            maxPages: 4,
+            maxAggregateBodyChars: maxAgg,
+            allowLoopbackForTesting: true,
+          }
+        );
+
+        const result = await crawler.crawl(`http://127.0.0.1:${testHttpPort}/0`);
+        expect(result.pages.length).toBe(4);
+
+        // Aggregate retention bound is strictly respected
+        expect(result.cumulativeRetainedBodyChars).toBeDefined();
+        expect(result.cumulativeRetainedBodyChars!).toBeLessThanOrEqual(maxAgg);
+
+        let totalRetained = 0;
+        for (const p of result.pages) {
+          totalRetained += p.bodyText?.length || 0;
+        }
+        expect(totalRetained).toBe(result.cumulativeRetainedBodyChars);
+        expect(totalRetained).toBeLessThanOrEqual(maxAgg);
+
+        // Last page has bodyText === undefined due to budget exhaustion
+        expect(result.pages[3]?.bodyText).toBeUndefined();
+      } finally {
+        await new Promise<void>((resolve) => testHttpServer.close(() => resolve()));
+      }
+    });
+
+    it('evaluates expired certificate authorization failure and flags TLS_CERTIFICATE_EXPIRED', () => {
+      // Simulate failed handshake where OpenSSL rejected with CERT_HAS_EXPIRED
+      // Node.js checkServerIdentity is not called when OpenSSL rejects verification,
+      // but authorizationError is captured safely from the connection attempt.
+      const page = createMockCrawledPage({
+        url: 'https://expired.example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: false,
+          authorizationError: 'CERT_HAS_EXPIRED',
+          peerCertificate: undefined, // OpenSSL freed certificate on handshake abort
+        },
+      });
+
+      const rule = new TlsRule();
+      const findings = rule.evaluate(page);
+
+      // Both untrusted chain AND expired cert are flagged
+      expect(findings.some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_UNTRUSTED')).toBe(true);
+      const expiredFinding = findings.find((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_EXPIRED');
+      expect(expiredFinding).toBeDefined();
+      expect(expiredFinding?.severity).toBe('HIGH');
+      expect(expiredFinding?.confidence).toBe('CONFIRMED');
+      expect(expiredFinding?.evidence.authorizationError).toBe('CERT_HAS_EXPIRED');
+    });
+
+    it('evaluates hostname mismatch error when checkServerIdentity is bypassed or fails before detailed extraction', () => {
+      const page = createMockCrawledPage({
+        url: 'https://mismatched.example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: false,
+          authorizationError: 'ERR_TLS_CERT_ALTNAME_INVALID: Hostname/IP does not match cert',
+          peerCertificate: undefined,
+        },
+      });
+
+      const rule = new TlsRule();
+      const findings = rule.evaluate(page);
+
+      const mismatchFinding = findings.find((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH');
+      expect(mismatchFinding).toBeDefined();
+      expect(mismatchFinding?.severity).toBe('HIGH');
+      expect(mismatchFinding?.confidence).toBe('CONFIRMED');
+      expect(mismatchFinding?.evidence.authorizationError).toContain('ERR_TLS_CERT_ALTNAME_INVALID');
     });
   });
 

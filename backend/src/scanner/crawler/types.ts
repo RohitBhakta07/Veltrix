@@ -76,6 +76,13 @@ export interface CrawlerOptions {
   readonly maxResponseSizeBytes?: number;
 
   /**
+   * Maximum cumulative characters of bodyText retained across all pages in a crawl session (default: 2MB).
+   * Once this scan-level budget is reached, subsequent crawled pages continue link discovery
+   * but do not retain bodyText in memory, preventing cumulative heap exhaustion.
+   */
+  readonly maxAggregateBodyChars?: number;
+
+  /**
    * End-to-end request timeout per crawled page in milliseconds (default: 10000).
    */
   readonly timeoutMs?: number;
@@ -125,4 +132,5 @@ export interface CrawlResult {
   readonly discoveredUrls: readonly string[];
   readonly durationMs: number;
   readonly stoppedReason: CrawlStoppedReason;
+  readonly cumulativeRetainedBodyChars?: number;
 }

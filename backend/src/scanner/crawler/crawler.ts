@@ -55,6 +55,8 @@ export class BoundedCrawler {
   public static readonly DEFAULT_TIMEOUT_MS = 10000;
   public static readonly DEFAULT_MAX_RESPONSE_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
   public static readonly ABSOLUTE_MAX_RESPONSE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB (SafeHttpClient ceiling)
+  public static readonly DEFAULT_MAX_AGGREGATE_BODY_CHARS = 2 * 1024 * 1024; // 2MB scan-level body retention budget
+  public static readonly ABSOLUTE_MAX_AGGREGATE_BODY_CHARS = 16 * 1024 * 1024; // 16MB max scan retention budget
 
   private readonly context: AuthorizedScanScopeContext;
   private readonly client: SafeHttpClient;
@@ -65,6 +67,8 @@ export class BoundedCrawler {
   public readonly maxQueueSize: number;
   public readonly timeoutMs: number;
   public readonly maxResponseSizeBytes: number;
+  public readonly maxAggregateBodyChars: number;
+  private cumulativeRetainedBodyChars = 0;
 
   constructor(
     context: AuthorizedScanScopeContext,
@@ -138,6 +142,20 @@ export class BoundedCrawler {
     }
     this.maxResponseSizeBytes = rawMaxResponse;
 
+    // Validate and enforce maxAggregateBodyChars (default: 2MB, max: 16MB)
+    const rawMaxAggBody =
+      this.options.maxAggregateBodyChars ?? BoundedCrawler.DEFAULT_MAX_AGGREGATE_BODY_CHARS;
+    if (
+      !Number.isInteger(rawMaxAggBody) ||
+      rawMaxAggBody < 0 ||
+      rawMaxAggBody > BoundedCrawler.ABSOLUTE_MAX_AGGREGATE_BODY_CHARS
+    ) {
+      throw new RangeError(
+        `maxAggregateBodyChars must be an integer between 0 and ${BoundedCrawler.ABSOLUTE_MAX_AGGREGATE_BODY_CHARS} (received ${rawMaxAggBody}).`
+      );
+    }
+    this.maxAggregateBodyChars = rawMaxAggBody;
+
     // Initialize or assign SafeHttpClient
     this.client =
       client ||
@@ -153,6 +171,7 @@ export class BoundedCrawler {
    */
   async crawl(customSeedUrl?: string): Promise<CrawlResult> {
     const startTime = Date.now();
+    this.cumulativeRetainedBodyChars = 0;
 
     // 1. Resolve and validate initial seed URL
     const rawSeed = customSeedUrl || `https://${this.context.primaryDomain}/`;
@@ -307,6 +326,7 @@ export class BoundedCrawler {
       discoveredUrls: Object.freeze(Array.from(discoveredUrlsMap.keys())),
       durationMs,
       stoppedReason,
+      cumulativeRetainedBodyChars: this.cumulativeRetainedBodyChars,
     });
   }
 
@@ -361,9 +381,16 @@ export class BoundedCrawler {
       }
 
       const isTextContent = /text\/|application\/(?:json|xml|xhtml\+xml|javascript|x-javascript)/i.test(contentType);
-      const bodyText = isTextContent && res.text
-        ? res.text.slice(0, MAX_PASSIVE_BODY_CHARS)
-        : undefined;
+      let bodyText: string | undefined = undefined;
+
+      if (isTextContent && res.text) {
+        const availableBudget = Math.max(0, this.maxAggregateBodyChars - this.cumulativeRetainedBodyChars);
+        const maxCharsForThisPage = Math.min(MAX_PASSIVE_BODY_CHARS, availableBudget);
+        if (maxCharsForThisPage > 0) {
+          bodyText = res.text.slice(0, maxCharsForThisPage);
+          this.cumulativeRetainedBodyChars += bodyText.length;
+        }
+      }
 
       return Object.freeze({
         url: item.url,

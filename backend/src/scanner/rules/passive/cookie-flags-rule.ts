@@ -32,6 +32,7 @@ export interface ParsedCookie {
   readonly path?: string;
   readonly domain?: string;
   readonly raw: string;
+  readonly duplicateAttributes?: readonly string[];
 }
 
 export class CookieFlagsRule implements PassiveRuleInterface {
@@ -230,6 +231,9 @@ export class CookieFlagsRule implements PassiveRuleInterface {
     let cookiePath: string | undefined = undefined;
     let domain: string | undefined = undefined;
 
+        const seenAttrs = new Set<string>();
+    const duplicateAttributes: string[] = [];
+
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i]?.trim();
       if (!part) continue;
@@ -239,6 +243,12 @@ export class CookieFlagsRule implements PassiveRuleInterface {
         .trim()
         .toLowerCase();
       const attrValue = attrEqIdx !== -1 ? part.slice(attrEqIdx + 1).trim() : '';
+
+      if (seenAttrs.has(attrName)) {
+        duplicateAttributes.push(attrName);
+      } else {
+        seenAttrs.add(attrName);
+      }
 
       switch (attrName) {
         case 'secure':
@@ -279,6 +289,7 @@ export class CookieFlagsRule implements PassiveRuleInterface {
       path: cookiePath,
       domain,
       raw: trimmed,
+      duplicateAttributes: duplicateAttributes.length > 0 ? Object.freeze(duplicateAttributes) : undefined,
     };
   }
 

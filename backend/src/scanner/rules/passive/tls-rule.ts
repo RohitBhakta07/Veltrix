@@ -121,7 +121,30 @@ export class TlsRule implements PassiveRuleInterface {
     }
 
     // 3. Evaluate Certificate Expiration
-    if (tls.peerCertificate && tls.peerCertificate.validTo) {
+    if (
+      tls.authorizationError &&
+      /CERT_HAS_EXPIRED|certificate has expired/i.test(tls.authorizationError)
+    ) {
+      findings.push(
+        Object.freeze({
+          ruleId: this.id,
+          vulnerabilityType: 'TLS_CERTIFICATE_EXPIRED',
+          title: 'Expired TLS Certificate',
+          severity: 'HIGH',
+          confidence: 'CONFIRMED',
+          description: `The TLS certificate presented by ${page.url} has expired (handshake verification failed with ${tls.authorizationError}).`,
+          remediation:
+            'Renew and deploy a valid, active TLS certificate from an authorized CA immediately.',
+          url: page.url,
+          evidence: Object.freeze({
+            targetUrl: page.url,
+            validTo: tls.peerCertificate?.validTo || 'EXPIRED_HANDSHAKE_REJECTED',
+            authorizationError: tls.authorizationError,
+            currentEvaluationTime: new Date(now).toISOString(),
+          }),
+        })
+      );
+    } else if (tls.peerCertificate && tls.peerCertificate.validTo) {
       const validToMs = Date.parse(tls.peerCertificate.validTo);
       if (!Number.isNaN(validToMs)) {
         if (validToMs < now) {
@@ -265,6 +288,34 @@ export class TlsRule implements PassiveRuleInterface {
           );
         }
       }
+    } else if (
+      tls.authorizationError &&
+      /ERR_TLS_CERT_ALTNAME_INVALID|altname|hostname mismatch/i.test(tls.authorizationError)
+    ) {
+      let hostname = '';
+      try {
+        hostname = new URL(page.url).hostname.toLowerCase();
+      } catch {
+        hostname = '';
+      }
+      findings.push(
+        Object.freeze({
+          ruleId: this.id,
+          vulnerabilityType: 'TLS_CERTIFICATE_HOSTNAME_MISMATCH',
+          title: 'TLS Certificate Hostname Mismatch',
+          severity: 'HIGH',
+          confidence: 'CONFIRMED',
+          description: `The TLS certificate presented by ${page.url} does not match target hostname '${hostname}' (${tls.authorizationError}).`,
+          remediation:
+            'Reissue the TLS certificate ensuring the target hostname matches the Subject Alternative Names (SAN dNSName entries).',
+          url: page.url,
+          evidence: Object.freeze({
+            targetUrl: page.url,
+            targetHostname: hostname,
+            authorizationError: tls.authorizationError,
+          }),
+        })
+      );
     }
 
     return Object.freeze(findings);
