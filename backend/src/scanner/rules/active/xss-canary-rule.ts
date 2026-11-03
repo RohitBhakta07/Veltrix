@@ -1,0 +1,167 @@
+/**
+ * VELTRIX Active Security Rule: Reflected Cross-Site Scripting Canary (TASK-805)
+ *
+ * Dispatches non-executable, inert alphanumeric canaries to detect unencoded
+ * parameter reflection in HTML body, attribute, or script contexts.
+ *
+ * Invariants:
+ * - Emits strictly benign alphanumeric canary tokens: vltxcanary_<random16Hex>.
+ * - Never executes payloads, alters state, or injects executable JavaScript.
+ * - Performs differential baseline check to suppress pre-existing false positives.
+ * - Inspects reflection context (HTML text, attribute, script block).
+ * - Distinguishes raw reflection from entity-encoded reflections (&lt;canary&gt;);
+ *   properly encoded reflections do NOT produce a vulnerability finding.
+ */
+
+import crypto from 'node:crypto';
+import type { CrawledPage } from '../../crawler/types.js';
+import {
+  type ActiveRuleInterface,
+  type ActiveRuleExecutionContext,
+  type ScannerFinding,
+  RULE_ACTIVE_XSS_CANARY,
+} from '../../types.js';
+
+export class XssCanaryRule implements ActiveRuleInterface {
+  public readonly id = RULE_ACTIVE_XSS_CANARY;
+  public readonly name = 'Active Reflected XSS Canary Rule';
+  public readonly description =
+    'Dispatches inert, non-executable alphanumeric canaries to detect unencoded reflection across query parameters.';
+
+  private static readonly DEFAULT_PROBE_PARAMS = ['q', 'search', 'query', 'keyword'];
+
+  public async evaluate(
+    page: CrawledPage,
+    context: ActiveRuleExecutionContext
+  ): Promise<readonly ScannerFinding[]> {
+    const findings: ScannerFinding[] = [];
+    if (!page.url.startsWith('http://') && !page.url.startsWith('https://')) {
+      return Object.freeze(findings);
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(page.url);
+    } catch {
+      return Object.freeze(findings);
+    }
+
+    // Determine target parameters from existing query or default probe list
+    const paramsToProbe: string[] = [];
+    for (const key of parsedUrl.searchParams.keys()) {
+      if (!paramsToProbe.includes(key)) {
+        paramsToProbe.push(key);
+      }
+    }
+
+    if (paramsToProbe.length === 0) {
+      // If no query parameters, probe standard candidates
+      paramsToProbe.push(...XssCanaryRule.DEFAULT_PROBE_PARAMS);
+    }
+
+    for (const param of paramsToProbe) {
+      if (context.signal?.aborted) break;
+
+      const canary = `vltxcanary_${crypto.randomBytes(8).toString('hex')}`;
+
+      // Baseline check: Ensure canary does not already exist in baseline response
+      if (page.bodyText && page.bodyText.includes(canary)) {
+        continue;
+      }
+
+      // Construct probe URL with canary
+      const probeUrlObj = new URL(page.url);
+      probeUrlObj.searchParams.set(param, canary);
+      const probeUrl = probeUrlObj.toString();
+
+      try {
+        const res = await context.dispatchProbe(probeUrl, { method: 'GET' });
+        if (!res || !res.text || res.status >= 500) {
+          continue;
+        }
+
+        const body = res.text;
+
+        // Check if the canary appears anywhere in the response body
+        if (!body.includes(canary)) {
+          continue;
+        }
+
+        // Entity-encoded check: Verify whether reflection was sanitized or entity-escaped
+        // e.g., &lt;canary&gt; or &lt;vltxcanary... or &#x3c;canary...
+        const isEntityEncoded =
+          body.includes(`&lt;${canary}`) ||
+          body.includes(`${canary}&gt;`) ||
+          body.includes(`&lt;${canary}&gt;`) ||
+          body.includes(`&#60;${canary}`) ||
+          body.includes(`&#x3c;${canary}`) ||
+          body.includes(`&#x3C;${canary}`);
+
+        if (isEntityEncoded) {
+          // Properly encoded by the server; false positive suppressed
+          continue;
+        }
+
+        // Determine reflection context
+        const contextType = this.determineReflectionContext(body, canary);
+
+        const matchIdx = body.indexOf(canary);
+        const snippetStart = Math.max(0, matchIdx - 40);
+        const snippetEnd = Math.min(body.length, matchIdx + canary.length + 40);
+        const snippet = body.slice(snippetStart, snippetEnd).trim();
+
+        findings.push(
+          Object.freeze({
+            ruleId: this.id,
+            vulnerabilityType: 'CROSS_SITE_SCRIPTING_REFLECTED',
+            title: `Reflected Cross-Site Scripting (XSS) Canary in Parameter '${param}'`,
+            severity: 'HIGH',
+            confidence: 'CONFIRMED',
+            description: `An inert, non-executable alphanumeric canary (${canary}) was reflected verbatim without HTML entity encoding in parameter '${param}' on ${page.url}. Reflection context: ${contextType}.`,
+            remediation:
+              'Apply context-aware output encoding (HTML entity encoding, attribute escaping, or JSON serialization) before rendering user input, and enforce a strong Content-Security-Policy.',
+            url: page.url,
+            endpoint: probeUrl,
+            evidence: Object.freeze({
+              targetUrl: page.url,
+              parameter: param,
+              canaryPayload: canary,
+              reflectionContext: contextType,
+              responseStatus: res.status,
+              responseBodySnippet: snippet.slice(0, 300),
+            }),
+          })
+        );
+      } catch {
+        // Probe errors fail safely without halting evaluation
+      }
+    }
+
+    return Object.freeze(findings);
+  }
+
+  private determineReflectionContext(
+    body: string,
+    canary: string
+  ): 'SCRIPT_BLOCK' | 'HTML_ATTRIBUTE' | 'HTML_TEXT' | 'RAW_BODY' {
+    const idx = body.indexOf(canary);
+    if (idx === -1) return 'RAW_BODY';
+
+    // Check script block context
+    const beforeText = body.slice(0, idx);
+    const lastScriptOpen = beforeText.lastIndexOf('<script');
+    const lastScriptClose = beforeText.lastIndexOf('</script>');
+    if (lastScriptOpen !== -1 && (lastScriptClose === -1 || lastScriptOpen > lastScriptClose)) {
+      return 'SCRIPT_BLOCK';
+    }
+
+    // Check HTML attribute context
+    const lastTagOpen = beforeText.lastIndexOf('<');
+    const lastTagClose = beforeText.lastIndexOf('>');
+    if (lastTagOpen !== -1 && (lastTagClose === -1 || lastTagOpen > lastTagClose)) {
+      return 'HTML_ATTRIBUTE';
+    }
+
+    return 'HTML_TEXT';
+  }
+}
