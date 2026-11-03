@@ -56,7 +56,7 @@ export class BannerDisclosureRule implements PassiveRuleInterface {
   public evaluate(page: CrawledPage): readonly ScannerFinding[] {
     const findings: ScannerFinding[] = [];
     const headers = page.headers || {};
-    const body = page.bodyText || page.rawBody?.toString('utf8') || '';
+    const body = page.bodyText || '';
 
     // 1. Web Server Banner Version Disclosure
     const serverHeader = headers['server'];

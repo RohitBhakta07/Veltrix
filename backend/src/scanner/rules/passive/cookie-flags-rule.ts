@@ -19,6 +19,8 @@ import {
   RULE_PASSIVE_COOKIES,
 } from '../../types.js';
 
+const VALID_SAMESITE_VALUES: ReadonlySet<string> = new Set(['strict', 'lax', 'none']);
+
 export interface ParsedCookie {
   readonly name: string;
   readonly value: string;
@@ -98,33 +100,88 @@ export class CookieFlagsRule implements PassiveRuleInterface {
         );
       }
 
-      // 3. Missing or Permissive SameSite attribute (must be Lax or Strict)
-      if (!parsed.sameSite || parsed.sameSite.toLowerCase() === 'none') {
-        const isNone = parsed.sameSite && parsed.sameSite.toLowerCase() === 'none';
+      // 3. SameSite Attribute Validation (Strict, Lax, None)
+      if (parsed.sameSite === null) {
         findings.push(
           Object.freeze({
             ruleId: this.id,
             vulnerabilityType: 'INSECURE_COOKIE_ATTRIBUTES',
-            title: `Cookie '${parsed.name}' ${
-              isNone ? "Configured with Insecure 'SameSite=None'" : "Missing 'SameSite' Attribute"
-            }`,
+            title: `Cookie '${parsed.name}' Missing 'SameSite' Attribute`,
             severity: 'LOW',
             confidence: 'CONFIRMED',
-            description: `Cookie '${parsed.name}' set by ${page.url} ${
-              isNone
-                ? "is configured with 'SameSite=None', allowing cross-site requests to include the cookie"
-                : "does not specify a 'SameSite' attribute"
-            }, increasing susceptibility to Cross-Site Request Forgery (CSRF).`,
+            description: `Cookie '${parsed.name}' set by ${page.url} does not specify a 'SameSite' attribute, increasing susceptibility to Cross-Site Request Forgery (CSRF).`,
             remediation: `Configure 'SameSite=Lax' (recommended for navigation) or 'SameSite=Strict' (for sensitive sessions) on the Set-Cookie header.`,
             url: page.url,
             evidence: Object.freeze({
               targetUrl: page.url,
               cookieName: parsed.name,
-              sameSiteValue: parsed.sameSite || 'absent',
+              sameSiteValue: 'absent',
               rawCookie: this.sanitizeRawCookie(rawCookie),
             }),
           })
         );
+      } else {
+        const lowerSameSite = parsed.sameSite.toLowerCase();
+        if (lowerSameSite === '' || !VALID_SAMESITE_VALUES.has(lowerSameSite)) {
+          findings.push(
+            Object.freeze({
+              ruleId: this.id,
+              vulnerabilityType: 'INVALID_SAMESITE_ATTRIBUTE',
+              title: `Cookie '${parsed.name}' Has Invalid 'SameSite' Attribute Value '${parsed.sameSite}'`,
+              severity: 'MEDIUM',
+              confidence: 'CONFIRMED',
+              description: `Cookie '${parsed.name}' set by ${page.url} declares an invalid 'SameSite' value '${parsed.sameSite}'. Valid values per RFC 6265bis are 'Strict', 'Lax', or 'None'.`,
+              remediation: `Update the 'SameSite' attribute to one of 'Strict', 'Lax', or 'None'.`,
+              url: page.url,
+              evidence: Object.freeze({
+                targetUrl: page.url,
+                cookieName: parsed.name,
+                invalidSameSiteValue: parsed.sameSite,
+                rawCookie: this.sanitizeRawCookie(rawCookie),
+              }),
+            })
+          );
+        } else if (lowerSameSite === 'none') {
+          if (!parsed.secure) {
+            findings.push(
+              Object.freeze({
+                ruleId: this.id,
+                vulnerabilityType: 'INSECURE_COOKIE_ATTRIBUTES',
+                title: `Cookie '${parsed.name}' Uses 'SameSite=None' Without 'Secure' Attribute`,
+                severity: 'MEDIUM',
+                confidence: 'CONFIRMED',
+                description: `Cookie '${parsed.name}' set by ${page.url} declares 'SameSite=None' but omits the 'Secure' attribute. Modern browsers will reject this cookie per RFC 6265bis.`,
+                remediation: `Add the 'Secure' attribute whenever 'SameSite=None' is declared: 'Set-Cookie: ${parsed.name}=...; SameSite=None; Secure'.`,
+                url: page.url,
+                evidence: Object.freeze({
+                  targetUrl: page.url,
+                  cookieName: parsed.name,
+                  sameSiteValue: parsed.sameSite,
+                  missingFlag: 'Secure',
+                  rawCookie: this.sanitizeRawCookie(rawCookie),
+                }),
+              })
+            );
+          }
+          findings.push(
+            Object.freeze({
+              ruleId: this.id,
+              vulnerabilityType: 'INSECURE_COOKIE_ATTRIBUTES',
+              title: `Cookie '${parsed.name}' Configured with Insecure 'SameSite=None'`,
+              severity: 'LOW',
+              confidence: 'CONFIRMED',
+              description: `Cookie '${parsed.name}' set by ${page.url} is configured with 'SameSite=None', allowing cross-site requests to include the cookie and increasing CSRF exposure.`,
+              remediation: `Configure 'SameSite=Lax' (recommended for navigation) or 'SameSite=Strict' (for sensitive sessions) unless cross-site sharing is explicitly required.`,
+              url: page.url,
+              evidence: Object.freeze({
+                targetUrl: page.url,
+                cookieName: parsed.name,
+                sameSiteValue: parsed.sameSite,
+                rawCookie: this.sanitizeRawCookie(rawCookie),
+              }),
+            })
+          );
+        }
       }
     }
 
@@ -192,7 +249,7 @@ export class CookieFlagsRule implements PassiveRuleInterface {
           break;
         case 'samesite':
           // Preserve declared SameSite (Lax, Strict, None)
-          sameSite = attrValue || 'Lax';
+          sameSite = attrValue.trim();
           break;
         case 'expires':
           expires = attrValue;
@@ -230,13 +287,10 @@ export class CookieFlagsRule implements PassiveRuleInterface {
    */
   private sanitizeRawCookie(rawCookie: string): string {
     const parts = rawCookie.split(';');
-    const nameVal = parts[0]?.trim() || '';
-    const eqIdx = nameVal.indexOf('=');
-    if (eqIdx !== -1) {
-      const name = nameVal.slice(0, eqIdx).trim();
-      const rest = parts.slice(1).join(';');
-      return `${name}=[REDACTED]${rest ? ';' + rest : ''}`;
-    }
-    return rawCookie;
+    const firstPart = parts[0]?.trim() || '';
+    const eqIdx = firstPart.indexOf('=');
+    const name = eqIdx !== -1 ? firstPart.slice(0, eqIdx).trim() : firstPart;
+    const rest = parts.slice(1).map((p) => p.trim()).filter(Boolean).join('; ');
+    return `${name}=[REDACTED]${rest ? '; ' + rest : ''}`;
   }
 }

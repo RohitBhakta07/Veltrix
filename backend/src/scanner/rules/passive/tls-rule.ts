@@ -172,8 +172,8 @@ export class TlsRule implements PassiveRuleInterface {
       }
     }
 
-    // 4. Evaluate Hostname Matching
-    if (tls.peerCertificate && tls.peerCertificate.subject) {
+    // 4. Evaluate Hostname Matching (RFC 6125 SAN Precedence)
+    if (tls.peerCertificate) {
       let hostname = '';
       try {
         hostname = new URL(page.url).hostname.toLowerCase();
@@ -182,20 +182,60 @@ export class TlsRule implements PassiveRuleInterface {
       }
 
       if (hostname) {
-        const candidates: string[] = [];
-        if (tls.peerCertificate.subject.CN) {
-          candidates.push(tls.peerCertificate.subject.CN.toLowerCase().trim());
-        }
+        const sans: string[] = [];
         if (tls.peerCertificate.subjectAltNames) {
           for (const san of tls.peerCertificate.subjectAltNames) {
             const cleanSan = san.replace(/^DNS:\s*/i, '').toLowerCase().trim();
             if (cleanSan) {
-              candidates.push(cleanSan);
+              sans.push(cleanSan);
             }
           }
         }
 
-        if (candidates.length > 0 && !this.isHostnameMatched(hostname, candidates)) {
+        const cn = tls.peerCertificate.subject?.CN
+          ? tls.peerCertificate.subject.CN.toLowerCase().trim()
+          : '';
+
+        let matched = false;
+        let identitySource: 'SAN' | 'CN' | 'NONE' = 'NONE';
+        let evaluatedCandidates: readonly string[] = [];
+
+        if (sans.length > 0) {
+          // RFC 6125: If SAN dNSName entries exist, MUST NOT fall back to CN
+          identitySource = 'SAN';
+          evaluatedCandidates = sans;
+          matched = sans.some((p) => this.isHostnameMatched(hostname, p));
+        } else if (cn) {
+          // Fall back to Common Name ONLY when SAN is absent
+          identitySource = 'CN';
+          evaluatedCandidates = [cn];
+          matched = this.isHostnameMatched(hostname, cn);
+        } else {
+          identitySource = 'NONE';
+          evaluatedCandidates = [];
+          matched = false;
+        }
+
+        if (identitySource === 'NONE') {
+          findings.push(
+            Object.freeze({
+              ruleId: this.id,
+              vulnerabilityType: 'TLS_CERTIFICATE_NO_IDENTITY',
+              title: 'TLS Certificate Missing Valid Identity (SAN / CN Absent)',
+              severity: 'HIGH',
+              confidence: 'CONFIRMED',
+              description: `The TLS certificate presented by ${page.url} does not contain any Subject Alternative Names (SAN) or Subject Common Name (CN).`,
+              remediation:
+                'Reissue the TLS certificate with valid Subject Alternative Names (SAN dNSName entries) matching the website domain.',
+              url: page.url,
+              evidence: Object.freeze({
+                targetUrl: page.url,
+                targetHostname: hostname,
+                subject: tls.peerCertificate.subject,
+              }),
+            })
+          );
+        } else if (!matched) {
           findings.push(
             Object.freeze({
               ruleId: this.id,
@@ -203,16 +243,23 @@ export class TlsRule implements PassiveRuleInterface {
               title: 'TLS Certificate Hostname Mismatch',
               severity: 'HIGH',
               confidence: 'CONFIRMED',
-              description: `The TLS certificate presented by ${page.url} does not match target hostname '${hostname}'. Certificate identity candidates: [${candidates.join(
+              description: `The TLS certificate presented by ${page.url} does not match target hostname '${hostname}'. Identity source evaluated: ${identitySource} (candidates: [${evaluatedCandidates.join(
                 ', '
-              )}].`,
+              )}]).${
+                sans.length > 0 && cn && cn === hostname
+                  ? ' Note: Subject Common Name (CN) matches but was disregarded per RFC 6125 SAN precedence.'
+                  : ''
+              }`,
               remediation:
-                'Reissue the TLS certificate ensuring the target hostname matches the Subject Common Name (CN) or is included in the Subject Alternative Names (SAN).',
+                'Reissue the TLS certificate ensuring the target hostname is included in the Subject Alternative Names (SAN dNSName entries).',
               url: page.url,
               evidence: Object.freeze({
                 targetUrl: page.url,
                 targetHostname: hostname,
-                certificateCandidates: candidates,
+                identitySource,
+                evaluatedCandidates,
+                sanPrecedenceEnforced: sans.length > 0,
+                cnIgnoredDueToSanPrecedence: sans.length > 0 && Boolean(cn),
               }),
             })
           );
@@ -223,15 +270,21 @@ export class TlsRule implements PassiveRuleInterface {
     return Object.freeze(findings);
   }
 
-  private isHostnameMatched(targetHost: string, candidates: readonly string[]): boolean {
-    for (const pattern of candidates) {
-      if (pattern === targetHost) {
-        return true;
-      }
-      if (pattern.startsWith('*.')) {
-        const suffix = pattern.slice(2);
+  private isHostnameMatched(targetHost: string, pattern: string): boolean {
+    if (pattern === targetHost) {
+      return true;
+    }
+    // Single-label wildcard matching per RFC 6125 Section 6.4.3:
+    // Wildcard MUST be leftmost label, e.g. '*.example.com'.
+    // Multi-label wildcards (*.*.com), partial wildcards (*test.com, test*.com),
+    // and apex domain matches are strictly prohibited.
+    if (pattern.startsWith('*.') && !pattern.slice(2).includes('*')) {
+      const suffix = pattern.slice(2);
+      // Suffix must have at least one dot (e.g. not '*.com')
+      if (suffix.includes('.')) {
         if (targetHost.endsWith('.' + suffix)) {
           const prefix = targetHost.slice(0, -(suffix.length + 1));
+          // Single-label only: prefix must not be empty and must not contain any '.'
           if (prefix.length > 0 && !prefix.includes('.')) {
             return true;
           }

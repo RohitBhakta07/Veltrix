@@ -36,6 +36,8 @@ import {
 import { extractHtmlLinks } from './html-link-extractor.js';
 import { CrawlerScopeGuard } from './scope-guard.js';
 
+export const MAX_PASSIVE_BODY_CHARS = 64 * 1024;
+
 interface QueueItem {
   readonly url: string;
   readonly depth: number;
@@ -358,6 +360,11 @@ export class BoundedCrawler {
         );
       }
 
+      const isTextContent = /text\/|application\/(?:json|xml|xhtml\+xml|javascript|x-javascript)/i.test(contentType);
+      const bodyText = isTextContent && res.text
+        ? res.text.slice(0, MAX_PASSIVE_BODY_CHARS)
+        : undefined;
+
       return Object.freeze({
         url: item.url,
         depth: item.depth,
@@ -373,13 +380,13 @@ export class BoundedCrawler {
         headers: res.headers,
         setCookies: res.setCookies,
         rawHeaders: res.rawHeaders,
-        bodyText: res.text,
-        rawBody: res.rawBody,
+        bodyText,
         tls: res.tls,
       });
     } catch (err) {
       const durationMs = Date.now() - pageStartTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const tlsMeta = (err instanceof SafeTransportError ? err.tls : undefined) || (err as any)?.tls;
 
       if (this.options.onError) {
         try {
@@ -401,6 +408,7 @@ export class BoundedCrawler {
         durationMs,
         wireBytesReceived: 0,
         error: errorMsg,
+        tls: tlsMeta,
       });
     }
   }

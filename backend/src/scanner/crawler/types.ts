@@ -49,7 +49,6 @@ export interface CrawledPage {
   readonly setCookies?: readonly string[];
   readonly rawHeaders?: readonly string[];
   readonly bodyText?: string;
-  readonly rawBody?: Buffer;
   readonly tls?: SanitizedTlsMetadata;
 }
 

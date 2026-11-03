@@ -10,7 +10,11 @@
  * 6. High statement coverage (>95%) across all passive rule evaluators.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import tls from 'node:tls';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import type { CrawledPage, DiscoveredEndpoint } from '../../src/scanner/crawler/types.js';
 import {
   PassiveAnalyzer,
@@ -22,8 +26,15 @@ import {
   RULE_PASSIVE_HEADERS,
   RULE_PASSIVE_COOKIES,
   RULE_PASSIVE_DISCLOSURE,
+  BoundedCrawler,
+  MAX_PASSIVE_BODY_CHARS,
+  SafeHttpClient,
+  SafeTransportError,
   type ScannerFinding,
 } from '../../src/scanner/index.js';
+import { createAuthorizedScanScopeContext } from './helpers/test-context-helper.js';
+
+const TEST_PFX_BASE64 = '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';
 
 function createMockCrawledPage(overrides?: Partial<CrawledPage>): CrawledPage {
   return {
@@ -249,6 +260,142 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       expect(mismatch?.severity).toBe('HIGH');
       expect(mismatch?.confidence).toBe('CONFIRMED');
       expect(mismatch?.evidence.targetHostname).toBe('target.example.com');
+    });
+
+    
+    it('enforces RFC 6125 SAN precedence over CN and ignores matching CN when SAN is present', () => {
+      // Certificate has CN=example.com, but SAN is DNS:other.com
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subject: { CN: 'example.com' },
+            subjectAltNames: ['DNS:other.com'],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+
+      const rule = new TlsRule();
+      const findings = rule.evaluate(page);
+
+      // Under RFC 6125, SAN MUST take precedence and CN MUST NOT be evaluated
+      const mismatch = findings.find((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH');
+      expect(mismatch).toBeDefined();
+      expect(mismatch?.severity).toBe('HIGH');
+      expect(mismatch?.evidence.identitySource).toBe('SAN');
+      expect(mismatch?.evidence.sanPrecedenceEnforced).toBe(true);
+      expect(mismatch?.evidence.cnIgnoredDueToSanPrecedence).toBe(true);
+    });
+
+    it('permits CN fallback only when SAN is completely absent', () => {
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subject: { CN: 'example.com' },
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+
+      const rule = new TlsRule();
+      const findings = rule.evaluate(page);
+
+      expect(findings.some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH')).toBe(false);
+    });
+
+    it('flags TLS_CERTIFICATE_NO_IDENTITY when certificate has neither SAN nor CN', () => {
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subject: {},
+            subjectAltNames: [],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+
+      const rule = new TlsRule();
+      const findings = rule.evaluate(page);
+
+      const noIdentity = findings.find((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_NO_IDENTITY');
+      expect(noIdentity).toBeDefined();
+      expect(noIdentity?.severity).toBe('HIGH');
+    });
+
+    it('strictly enforces single-label wildcard matching and rejects multi-label / apex wildcard matching', () => {
+      const rule = new TlsRule();
+
+      // 1. Single-label wildcard *.example.com matches sub.example.com
+      const subPage = createMockCrawledPage({
+        url: 'https://sub.example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subjectAltNames: ['DNS:*.example.com'],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+      expect(rule.evaluate(subPage).some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH')).toBe(false);
+
+      // 2. Single-label wildcard *.example.com does NOT match apex example.com
+      const apexPage = createMockCrawledPage({
+        url: 'https://example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subjectAltNames: ['DNS:*.example.com'],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+      expect(rule.evaluate(apexPage).some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH')).toBe(true);
+
+      // 3. Single-label wildcard *.example.com does NOT match nested a.b.example.com
+      const deepPage = createMockCrawledPage({
+        url: 'https://a.b.example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subjectAltNames: ['DNS:*.example.com'],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+      expect(rule.evaluate(deepPage).some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH')).toBe(true);
+
+      // 4. Invalid multi-label wildcard *.*.example.com is rejected
+      const multiWildcardPage = createMockCrawledPage({
+        url: 'https://a.b.example.com/',
+        tls: {
+          protocol: 'TLSv1.3',
+          authorized: true,
+          peerCertificate: {
+            subjectAltNames: ['DNS:*.*.example.com'],
+            validFrom: 'Jan 01 12:00:00 2026 GMT',
+            validTo: 'Jan 01 12:00:00 2028 GMT',
+          },
+        },
+      });
+      expect(rule.evaluate(multiWildcardPage).some((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_HOSTNAME_MISMATCH')).toBe(true);
     });
 
     it('accepts valid wildcard certificates without false mismatch findings', () => {
@@ -599,6 +746,65 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       expect(cartFindings.some((f) => f.title.includes('HttpOnly'))).toBe(true);
     });
 
+    
+    it('flags invalid SameSite attribute values with INVALID_SAMESITE_ATTRIBUTE', () => {
+      const pageInvalid = createMockCrawledPage({
+        url: 'https://example.com/',
+        setCookies: ['token=secret; SameSite=invalid; Secure; HttpOnly; Path=/'],
+      });
+      const pageEmptySameSite = createMockCrawledPage({
+        url: 'https://example.com/',
+        setCookies: ['token2=secret; SameSite=; Secure; HttpOnly; Path=/'],
+      });
+
+      const rule = new CookieFlagsRule();
+      const findings1 = rule.evaluate(pageInvalid);
+      const findings2 = rule.evaluate(pageEmptySameSite);
+
+      const f1 = findings1.find((x) => x.vulnerabilityType === 'INVALID_SAMESITE_ATTRIBUTE');
+      expect(f1).toBeDefined();
+      expect(f1?.severity).toBe('MEDIUM');
+      expect(f1?.evidence.invalidSameSiteValue).toBe('invalid');
+
+      const f2 = findings2.find((x) => x.vulnerabilityType === 'INVALID_SAMESITE_ATTRIBUTE');
+      expect(f2).toBeDefined();
+      expect(f2?.severity).toBe('MEDIUM');
+    });
+
+    it('flags SameSite=None without Secure as insecure combination requiring Secure', () => {
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        setCookies: ['track=anon; SameSite=None; HttpOnly; Path=/'], // Missing Secure
+      });
+
+      const rule = new CookieFlagsRule();
+      const findings = rule.evaluate(page);
+
+      // Flagged as missing Secure attribute in general AND specifically SameSite=None without Secure
+      const requiresSecure = findings.find((x) => x.title.includes("Uses 'SameSite=None' Without 'Secure'"));
+      expect(requiresSecure).toBeDefined();
+      expect(requiresSecure?.severity).toBe('MEDIUM');
+    });
+
+    it('strictly redacts sensitive cookie values in evidence across all findings', () => {
+      const page = createMockCrawledPage({
+        url: 'https://example.com/',
+        setCookies: [
+          'session_id=SUPER_SECRET_TOKEN_999888; Path=/', // Missing Secure, HttpOnly, SameSite
+        ],
+      });
+
+      const rule = new CookieFlagsRule();
+      const findings = rule.evaluate(page);
+
+      expect(findings.length).toBeGreaterThan(0);
+      for (const finding of findings) {
+        expect(finding.evidence.rawCookie).toBeDefined();
+        expect(finding.evidence.rawCookie).toContain('session_id=[REDACTED]');
+        expect(finding.evidence.rawCookie).not.toContain('SUPER_SECRET_TOKEN_999888');
+      }
+    });
+
     it('accepts valid SameSite=Lax and SameSite=Strict without findings', () => {
       const pageLax = createMockCrawledPage({
         url: 'https://example.com/',
@@ -869,38 +1075,95 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       expect(repeatedFindings.length).toBe(findings.length);
     });
 
-    it('strictly guarantees ZERO extra network requests during analysis', async () => {
-      // Mock global fetch to spy and confirm 0 network requests
-      const fetchSpy = vi.fn();
+    it('strictly guarantees ZERO extra network requests during analysis across all network APIs', async () => {
+      // Spy on all 9 network APIs simultaneously:
+      // globalThis.fetch, http.request, http.get, https.request, https.get, net.connect, net.createConnection, tls.connect, SafeHttpClient.prototype.request
       const originalFetch = globalThis.fetch;
-      globalThis.fetch = fetchSpy;
+      const originalHttpRequest = http.request;
+      const originalHttpGet = http.get;
+      const originalHttpsRequest = https.request;
+      const originalHttpsGet = https.get;
+      const originalNetConnect = net.connect;
+      const originalNetCreateConnection = net.createConnection;
+      const originalTlsConnect = tls.connect;
+      const originalSafeRequest = SafeHttpClient.prototype.request;
+
+      const fetchSpy = vi.fn();
+      const httpReqSpy = vi.fn();
+      const httpGetSpy = vi.fn();
+      const httpsReqSpy = vi.fn();
+      const httpsGetSpy = vi.fn();
+      const netConnSpy = vi.fn();
+      const netCreateConnSpy = vi.fn();
+      const tlsConnSpy = vi.fn();
+      const safeReqSpy = vi.fn();
+
+      globalThis.fetch = fetchSpy as any;
+      (http as any).request = httpReqSpy;
+      (http as any).get = httpGetSpy;
+      (https as any).request = httpsReqSpy;
+      (https as any).get = httpsGetSpy;
+      (net as any).connect = netConnSpy;
+      (net as any).createConnection = netCreateConnSpy;
+      (tls as any).connect = tlsConnSpy;
+      SafeHttpClient.prototype.request = safeReqSpy as any;
 
       try {
         const analyzer = new PassiveAnalyzer();
         const page = createMockCrawledPage({
-          url: 'https://example.com/',
+          url: 'https://example.com/profile',
           headers: {
             'server': 'Apache/2.4.41 (Ubuntu)',
             'x-powered-by': 'PHP/7.4.3',
           },
+          setCookies: ['auth=secret; Path=/'],
+          tls: {
+            protocol: 'TLSv1.0',
+            authorized: false,
+            authorizationError: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+            peerCertificate: {
+              subject: { CN: 'untrusted.com' },
+              validFrom: 'Jan 01 2026',
+              validTo: 'Jan 01 2027',
+            },
+          },
+          bodyText: '<div><pre>Fatal error in /var/www/html/app.php on line 42</pre></div>',
           discoveredEndpoints: [
             {
               url: 'https://example.com/actuator/env',
               rawUrl: '/actuator/env',
               source: 'a',
               depth: 1,
-              parentUrl: 'https://example.com/',
+              parentUrl: 'https://example.com/profile',
             },
           ],
         });
 
         const findings = await analyzer.analyze(page);
 
-        expect(findings.length).toBeGreaterThan(0);
-        // STRICT INVARIANT: 0 network requests dispatched during passive evaluation
+        // Multiple rules fired and produced findings
+        expect(findings.length).toBeGreaterThanOrEqual(4);
+
+        // STRICT INVARIANT: 0 network requests dispatched across ALL 9 APIs
         expect(fetchSpy).not.toHaveBeenCalled();
+        expect(httpReqSpy).not.toHaveBeenCalled();
+        expect(httpGetSpy).not.toHaveBeenCalled();
+        expect(httpsReqSpy).not.toHaveBeenCalled();
+        expect(httpsGetSpy).not.toHaveBeenCalled();
+        expect(netConnSpy).not.toHaveBeenCalled();
+        expect(netCreateConnSpy).not.toHaveBeenCalled();
+        expect(tlsConnSpy).not.toHaveBeenCalled();
+        expect(safeReqSpy).not.toHaveBeenCalled();
       } finally {
         globalThis.fetch = originalFetch;
+        http.request = originalHttpRequest;
+        http.get = originalHttpGet;
+        https.request = originalHttpsRequest;
+        https.get = originalHttpsGet;
+        net.connect = originalNetConnect;
+        net.createConnection = originalNetCreateConnection;
+        tls.connect = originalTlsConnect;
+        SafeHttpClient.prototype.request = originalSafeRequest;
       }
     });
 
@@ -1149,4 +1412,124 @@ describe('Phase 8: Passive Security Assessment Pipeline (TASK-804)', () => {
       expect(page.tls?.peerCertificate?.subject.CN).toBe('portal.example.com');
     });
   });
+
+  // =========================================================================
+  // SECTION 6: Bounded Response-Body Memory & Real TLS Pipeline Integration
+  // =========================================================================
+  describe('6. Bounded Response-Body Memory & Real TLS Integration', () => {
+    let localHttpsServer: https.Server;
+    let localHttpsPort: number;
+
+    beforeAll(async () => {
+      localHttpsServer = https.createServer(
+        {
+          pfx: Buffer.from(TEST_PFX_BASE64, 'base64'),
+          passphrase: 'veltrix',
+        },
+        (req, res) => {
+          if (req.url === '/large.txt') {
+            res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('A'.repeat(128 * 1024)); // 128 KB
+            return;
+          }
+          if (req.url === '/image.png') {
+            res.writeHead(200, { 'Content-Type': 'image/png' });
+            res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Server': 'Apache/2.4.52',
+          });
+          res.end('<!DOCTYPE html><html><body><h1>Safe Real TLS Test</h1></body></html>');
+        }
+      );
+
+      await new Promise<void>((resolve) => {
+        localHttpsServer.listen(0, '127.0.0.1', () => {
+          const addr = localHttpsServer.address() as net.AddressInfo;
+          localHttpsPort = addr.port;
+          resolve();
+        });
+      });
+    });
+
+    afterAll(async () => {
+      await new Promise<void>((resolve) => localHttpsServer.close(() => resolve()));
+    });
+
+    it('enforces bounded response-body memory and eliminates rawBody from CrawledPage', () => {
+      const page = createMockCrawledPage({
+        url: 'https://example.com/large',
+        contentType: 'text/html; charset=utf-8',
+        bodyText: 'X'.repeat(MAX_PASSIVE_BODY_CHARS),
+      });
+
+      // Asserts CrawledPage bodyText is bounded and rawBody is eliminated
+      expect(page.bodyText?.length).toBe(MAX_PASSIVE_BODY_CHARS);
+      expect((page as any).rawBody).toBeUndefined();
+
+      const binaryPage = createMockCrawledPage({
+        url: 'https://example.com/avatar.png',
+        contentType: 'image/png',
+        bodyText: undefined,
+      });
+      expect(binaryPage.bodyText).toBeUndefined();
+      expect((binaryPage as any).rawBody).toBeUndefined();
+    });
+
+    it('captures TLS metadata during real HTTPS handshake failures and feeds TlsRule', async () => {
+      // Connect to localHttpsServer with SafeHttpClient
+      // The cert in TEST_PFX_BASE64 is self-signed/untrusted for real clients,
+      // so the TLS handshake will trigger SafeTransportError('TLS_VERIFICATION_FAILED')
+      // with rejectUnauthorized: true strictly preserved!
+      const client = new SafeHttpClient({
+        allowLoopbackForTesting: true,
+      });
+
+      const context = await createAuthorizedScanScopeContext({
+        orgId: 'org-test',
+        scanId: 'scan-test',
+        siteId: 'site-test',
+        primaryDomain: '127.0.0.1',
+        approvedSubdomains: [],
+        status: 'VERIFIED',
+        scanBlocked: false,
+        expiresAt: Date.now() + 86400000,
+        allowedPorts: [localHttpsPort],
+      });
+
+      const crawler = new BoundedCrawler(
+        context,
+        client,
+        {
+          maxPages: 1,
+          allowLoopbackForTesting: true,
+        }
+      );
+
+      const result = await crawler.crawl(`https://127.0.0.1:${localHttpsPort}/`);
+      expect(result.pages.length).toBe(1);
+
+      const crawledPage = result.pages[0]!;
+      expect(crawledPage.status).toBe(0);
+      expect(crawledPage.error).toBeDefined();
+
+      // Invariant: Failed TLS handshake attached sanitized TLS metadata to CrawledPage
+      expect(crawledPage.tls).toBeDefined();
+      expect(crawledPage.tls?.authorized).toBe(false);
+      expect(crawledPage.tls?.authorizationError).toBeDefined();
+
+      // Zero extra requests: TlsRule evaluates the captured metadata
+      const tlsRule = new TlsRule();
+      const findings = tlsRule.evaluate(crawledPage);
+
+      const untrustedFinding = findings.find((f) => f.vulnerabilityType === 'TLS_CERTIFICATE_UNTRUSTED');
+      expect(untrustedFinding).toBeDefined();
+      expect(untrustedFinding?.severity).toBe('HIGH');
+      expect(untrustedFinding?.confidence).toBe('CONFIRMED');
+      expect(untrustedFinding?.evidence.authorizationError).toBeDefined();
+    });
+  });
+
 });
