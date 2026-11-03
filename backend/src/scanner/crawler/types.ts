@@ -5,6 +5,8 @@
  * bounded, deterministic BFS web crawler and link extraction pipeline.
  */
 
+import type { SanitizedTlsMetadata } from '../transport/types.js';
+
 export type CrawlStoppedReason =
   | 'COMPLETED'
   | 'MAX_PAGES_REACHED'
@@ -43,6 +45,11 @@ export interface CrawledPage {
   readonly durationMs: number;
   readonly wireBytesReceived: number;
   readonly error?: string;
+  readonly headers?: Record<string, string>;
+  readonly setCookies?: readonly string[];
+  readonly rawHeaders?: readonly string[];
+  readonly bodyText?: string;
+  readonly tls?: SanitizedTlsMetadata;
 }
 
 export interface CrawlerOptions {
@@ -67,6 +74,13 @@ export interface CrawlerOptions {
    * Responses exceeding SafeHttpClient's 10MB ceiling are dropped by transport.
    */
   readonly maxResponseSizeBytes?: number;
+
+  /**
+   * Maximum cumulative characters of bodyText retained across all pages in a crawl session (default: 2MB).
+   * Once this scan-level budget is reached, subsequent crawled pages continue link discovery
+   * but do not retain bodyText in memory, preventing cumulative heap exhaustion.
+   */
+  readonly maxAggregateBodyChars?: number;
 
   /**
    * End-to-end request timeout per crawled page in milliseconds (default: 10000).
@@ -118,4 +132,5 @@ export interface CrawlResult {
   readonly discoveredUrls: readonly string[];
   readonly durationMs: number;
   readonly stoppedReason: CrawlStoppedReason;
+  readonly cumulativeRetainedBodyChars?: number;
 }

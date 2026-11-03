@@ -9,12 +9,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import type tls from 'node:tls';
+import tls from 'node:tls';
 import {
   type DnsResolverInterface,
   type SocketConnectorInterface,
   type SafeHttpRequestOptions,
   type SafeHttpResponse,
+  type SanitizedTlsMetadata,
   SafeTransportError,
   isRestrictedHopByHopHeader,
 } from './types.js';
@@ -34,6 +35,84 @@ export interface SafeHttpClientOptions {
   socketConnector?: SocketConnectorInterface;
   socketRegistry?: ActiveSocketRegistry;
   allowLoopbackForTesting?: boolean;
+}
+
+function extractSanitizedTlsMetadata(
+  socket: net.Socket | tls.TLSSocket | null,
+  capturedCert?: tls.PeerCertificate | null,
+  explicitAuthError?: string
+): SanitizedTlsMetadata | undefined {
+  if (!socket && !capturedCert && !explicitAuthError) {
+    return undefined;
+  }
+  const tlsSock =
+    socket && ('getProtocol' in socket || 'authorizationError' in socket)
+      ? (socket as tls.TLSSocket)
+      : null;
+
+  if (!tlsSock && !capturedCert && !explicitAuthError) {
+    return undefined;
+  }
+
+  try {
+    const protocol = tlsSock && typeof tlsSock.getProtocol === 'function' ? tlsSock.getProtocol() : null;
+    const cipher = tlsSock && typeof tlsSock.getCipher === 'function' ? tlsSock.getCipher() : undefined;
+    const cert =
+      capturedCert ||
+      (tlsSock && typeof tlsSock.getPeerCertificate === 'function' ? tlsSock.getPeerCertificate() : null);
+    const socketAuthError =
+      tlsSock && tlsSock.authorizationError ? String(tlsSock.authorizationError) : undefined;
+    const authorizationError = explicitAuthError || socketAuthError;
+    const authorized = tlsSock
+      ? tlsSock.authorized !== false && !authorizationError
+      : !authorizationError;
+
+    let peerCertificate: SanitizedTlsMetadata['peerCertificate'] = undefined;
+    if (
+      cert &&
+      typeof cert === 'object' &&
+      (cert.valid_to || cert.subject || cert.subjectaltname)
+    ) {
+      const subject: Record<string, string> = {};
+      if (cert.subject && typeof cert.subject === 'object') {
+        for (const [k, v] of Object.entries(cert.subject)) {
+          if (typeof v === 'string') subject[k] = v;
+        }
+      }
+      const issuer: Record<string, string> = {};
+      if (cert.issuer && typeof cert.issuer === 'object') {
+        for (const [k, v] of Object.entries(cert.issuer)) {
+          if (typeof v === 'string') issuer[k] = v;
+        }
+      }
+      const subjectAltNames = cert.subjectaltname
+        ? cert.subjectaltname.split(', ').map((s) => s.trim()).filter(Boolean)
+        : undefined;
+
+      peerCertificate = Object.freeze({
+        subject: Object.freeze(subject),
+        issuer: Object.freeze(issuer),
+        validFrom: cert.valid_from || '',
+        validTo: cert.valid_to || '',
+        subjectAltNames: subjectAltNames ? Object.freeze(subjectAltNames) : undefined,
+        serialNumber: cert.serialNumber || undefined,
+        fingerprint256: cert.fingerprint256 || undefined,
+      });
+    }
+
+    return Object.freeze({
+      protocol,
+      cipher:
+        cipher && cipher.name
+          ? Object.freeze({ name: cipher.name, version: cipher.version })
+          : undefined,
+      authorized,
+      authorizationError,
+      peerCertificate,
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 export class SafeHttpClient {
@@ -300,6 +379,7 @@ export class SafeHttpClient {
     return new Promise((resolve, reject) => {
       let settled = false;
       let activeSocket: net.Socket | tls.TLSSocket | null = null;
+      let capturedPeerCert: tls.PeerCertificate | null = null;
       let rawIncomingRes: http.IncomingMessage | null = null;
       let unregisterSocket: (() => void) | null = null;
       let connectedRemoteAddress = pinnedIp;
@@ -328,6 +408,12 @@ export class SafeHttpClient {
         settled = true;
         cleanup();
 
+        const tlsMetadata = extractSanitizedTlsMetadata(
+          activeSocket,
+          capturedPeerCert,
+          (err as any)?.code || (err as any)?.authorizationError
+        );
+
         if (rawIncomingRes) {
           try {
             rawIncomingRes.destroy();
@@ -341,15 +427,26 @@ export class SafeHttpClient {
         }
 
         if (err instanceof SafeTransportError) {
-          reject(err);
+          reject(err.tls ? err : new SafeTransportError(err.code, err.message, err.details, tlsMetadata));
         } else {
           const msg = err.message || 'Transport error';
+          const errCode = (err as any)?.code;
           if (/timeout/i.test(msg)) {
-            reject(new SafeTransportError('REQUEST_TIMEOUT', msg));
-          } else if (/self-signed|certificate|tls/i.test(msg)) {
-            reject(new SafeTransportError('TLS_VERIFICATION_FAILED', msg));
+            reject(new SafeTransportError('REQUEST_TIMEOUT', msg, undefined, tlsMetadata));
+          } else if (
+            /self-signed|certificate|tls|altname|hostname/i.test(msg) ||
+            (typeof errCode === 'string' && errCode.startsWith('ERR_TLS_'))
+          ) {
+            reject(
+              new SafeTransportError(
+                'TLS_VERIFICATION_FAILED',
+                msg,
+                { originalCode: errCode },
+                tlsMetadata
+              )
+            );
           } else {
-            reject(new SafeTransportError('CONNECT_TIMEOUT', msg));
+            reject(new SafeTransportError('CONNECT_TIMEOUT', msg, undefined, tlsMetadata));
           }
         }
       };
@@ -432,8 +529,12 @@ export class SafeHttpClient {
 
           const tlsSocket = this.socketConnector.connectTls({
             socket: tcpSocket,
-            servername: url.hostname,
+            servername: net.isIP(url.hostname) ? undefined : url.hostname,
             rejectUnauthorized: true,
+            checkServerIdentity: (hostname, cert) => {
+              capturedPeerCert = cert;
+              return tls.checkServerIdentity(hostname, cert);
+            },
           });
 
           tlsSocket.on('secureConnect', () => {
@@ -612,10 +713,30 @@ export class SafeHttpClient {
             }
           }
 
+          const setCookies: string[] = [];
+          const rawH = res.rawHeaders;
+          if (Array.isArray(res.headers['set-cookie'])) {
+            setCookies.push(...res.headers['set-cookie']);
+          } else if (typeof res.headers['set-cookie'] === 'string') {
+            setCookies.push(res.headers['set-cookie']);
+          } else if (rawH) {
+            for (let i = 0; i < rawH.length; i += 2) {
+              const hName = rawH[i];
+              const hVal = rawH[i + 1];
+              if (hName && hVal && hName.toLowerCase() === 'set-cookie') {
+                setCookies.push(hVal);
+              }
+            }
+          }
+
+          const tlsMetadata = extractSanitizedTlsMetadata(activeSocket, capturedPeerCert);
+
           const fullResponse: SafeHttpResponse = {
             status: statusCode,
             statusText: res.statusMessage || 'OK',
             headers: responseHeaders,
+            setCookies: Object.freeze(setCookies),
+            rawHeaders: res.rawHeaders ? Object.freeze([...res.rawHeaders]) : undefined,
             rawBody: decompressResult.bodyBuffer,
             rawBuffer: decompressResult.bodyBuffer,
             text,
@@ -625,6 +746,7 @@ export class SafeHttpClient {
             wireBytesReceived: decompressResult.wireBytesReceived,
             decompressedBytes: decompressResult.decompressedBytes,
             redirectHops: 0,
+            tls: tlsMetadata,
           };
 
           resolve({
