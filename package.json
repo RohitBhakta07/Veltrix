@@ -16,6 +16,7 @@
     "pretest": "npm run build --workspace=@veltrix/shared",
     "prebuild": "npm run build --workspace=@veltrix/shared",
     "build": "npm run build --workspaces --if-present",
+    "build:frontend": "npm run build --workspace=@veltrix/shared && npm run build --workspace=@veltrix/frontend",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
