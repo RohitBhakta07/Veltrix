@@ -1,2 +1,5 @@
 #!/usr/bin/env node
-import '../dist/index.js';
+import { createCli } from '../dist/index.js';
+
+const cli = createCli();
+cli.parse(process.argv);

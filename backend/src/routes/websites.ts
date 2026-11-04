@@ -6,6 +6,7 @@ import {
   DomainVerifyRequestSchema,
   type WebsiteAsset,
   type IncidentStatus,
+  type WebRiskFactors,
 } from '@veltrix/shared';
 import { authenticate, requireBearerAuth } from '../middleware/auth.js';
 import { enforceTenantIsolation } from '../middleware/tenant.js';
@@ -509,14 +510,23 @@ export function createWebsitesRouter(options?: {
     // Identify highest active risk
     let currentRiskScore = 0;
     let currentRiskBand: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' = 'LOW';
-    let factors: any = {
+    let factors: WebRiskFactors = {
       baseSeverity: 0,
       frequencyMultiplier: 1.0,
-      assetMultiplier: 1.0,
-      threatMultiplier: 1.0,
-      vulnerabilityTerm: 0,
-      sequenceBonus: 0,
-      explanation: 'No threat incidents detected.',
+      assetCriticalityMultiplier: 1.0,
+      threatIntelMultiplier: 1.0,
+      attackSequenceBonus: 0,
+      vulnerabilityMatchTerm: 0,
+      finalScore: 0,
+      riskBand: 'LOW',
+      calculationExplanation: 'No threat incidents detected.',
+      contributingFactors: {
+        eventCount: 0,
+        detectedAttackTypes: [],
+        highestConfidence: 'SUSPICIOUS_ATTEMPT',
+        assetEnvironment: existing.environment,
+        threatIntelStatus: 'CLEAN',
+      },
     };
 
     if (incidentsResult.items.length > 0) {
@@ -534,11 +544,21 @@ export function createWebsitesRouter(options?: {
         factors = highestIncident.webRiskFactors || {
           baseSeverity: highestIncident.severity === 'CRITICAL' ? 40 : highestIncident.severity === 'HIGH' ? 30 : 20,
           frequencyMultiplier: 1.0,
-          assetMultiplier: 1.0,
-          threatMultiplier: 1.0,
-          vulnerabilityTerm: 0,
-          sequenceBonus: 0,
-          explanation: highestIncident.description,
+          assetCriticalityMultiplier:
+            existing.environment === 'PRODUCTION' ? 1.3 : existing.environment === 'DEVELOPMENT' ? 0.8 : 1.0,
+          threatIntelMultiplier: 1.0,
+          attackSequenceBonus: 0,
+          vulnerabilityMatchTerm: 0,
+          finalScore: highestIncident.riskScore,
+          riskBand: currentRiskBand,
+          calculationExplanation: highestIncident.description,
+          contributingFactors: {
+            eventCount: highestIncident.associatedEventIds?.length || 0,
+            detectedAttackTypes: highestIncident.attackTypes || [],
+            highestConfidence: highestIncident.highestConfidence || 'SUSPICIOUS_ATTEMPT',
+            assetEnvironment: existing.environment,
+            threatIntelStatus: 'CLEAN',
+          },
         };
       }
     }

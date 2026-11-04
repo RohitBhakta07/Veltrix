@@ -1,57 +1,29 @@
-import type { WebsiteAsset, Integration, Detection, Incident } from '@veltrix/shared';
-
-let cachedToken: string | null = null;
-
-export async function getAuthToken(): Promise<string> {
-  if (cachedToken) return cachedToken;
-
-  try {
-    const res = await fetch('/api/v1/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: 'admin@cyberdefend.corp',
-        password: 'OrgAdmin#2026!',
-        orgId: 'org-enterprise-01',
-      }),
-    });
-
-    if (res.ok) {
-      const json = await res.json();
-      cachedToken = json.data?.tokens?.accessToken || null;
-      if (cachedToken) return cachedToken;
-    }
-  } catch {
-    // Backend offline or unreachable
-  }
-
-  return '';
-}
-
-async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = await getAuthToken();
-  const headers = new Headers(init.headers || {});
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
-  }
-  headers.set('Content-Type', 'application/json');
-
-  return fetch(url, {
-    ...init,
-    headers,
-  });
-}
-
-// --- Website Assets API ---
+/**
+ * Backwards-compatible API surface for the Phase 6/7 feature components.
+ * New code should import from `lib/api/endpoints` directly.
+ */
+import type { WebsiteAsset, Integration } from '@veltrix/shared';
+import {
+  createIntegration as createIntegrationRequest,
+  createWebsite as createWebsiteRequest,
+  deleteIntegration as deleteIntegrationRequest,
+  deleteWebsite as deleteWebsiteRequest,
+  fetchIntegrations as fetchIntegrationsRequest,
+  fetchIncidents,
+  fetchSiteRiskSummary as fetchSiteRiskSummaryRequest,
+  fetchSiteTimeline as fetchSiteTimelineRequest,
+  fetchWebDetections as fetchWebDetectionsRequest,
+  fetchWebsites as fetchWebsitesRequest,
+  revokeDomainVerification as revokeDomainVerificationRequest,
+  revokeIntegration as revokeIntegrationRequest,
+  rotateIntegrationKey as rotateIntegrationKeyRequest,
+  updateIncident as updateIncidentRequest,
+  verifyDomainOwnership as verifyDomainOwnershipRequest,
+} from './lib/api/endpoints';
+import type { RiskSummary, SiteTimeline } from './lib/api/types';
 
 export async function fetchWebsites(): Promise<{ total: number; sites: WebsiteAsset[] }> {
-  const res = await authFetch('/api/v1/websites');
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch websites (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return { total: json.total || json.sites?.length || 0, sites: json.sites || [] };
+  return fetchWebsitesRequest();
 }
 
 export async function createWebsite(data: {
@@ -62,64 +34,34 @@ export async function createWebsite(data: {
   riskTier?: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
   tags?: string[];
 }): Promise<WebsiteAsset> {
-  const res = await authFetch('/api/v1/websites', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Failed to create website (HTTP ${res.status})`);
-  }
-  return json.site;
+  const response = await createWebsiteRequest(data);
+  return response.site;
 }
 
 export async function verifyDomainOwnership(
   siteId: string,
-  method: 'DNS_TXT' | 'HTTP_CHALLENGE'
+  method: 'DNS_TXT' | 'HTTP_CHALLENGE' | 'META_TAG'
 ): Promise<{ verified: boolean; message: string; expiresAt?: string }> {
-  const res = await authFetch(`/api/v1/websites/${siteId}/verify`, {
-    method: 'POST',
-    body: JSON.stringify({ method }),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Verification failed (HTTP ${res.status})`);
-  }
-  return json;
+  return verifyDomainOwnershipRequest(siteId, method);
 }
 
-export async function revokeDomainVerification(siteId: string, reason?: string): Promise<WebsiteAsset> {
-  const res = await authFetch(`/api/v1/websites/${siteId}/revoke`, {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Revocation failed (HTTP ${res.status})`);
-  }
-  return json.site;
+export async function revokeDomainVerification(
+  siteId: string,
+  reason?: string
+): Promise<WebsiteAsset> {
+  const response = await revokeDomainVerificationRequest(siteId, reason);
+  return response.site;
 }
 
 export async function deleteWebsite(siteId: string): Promise<void> {
-  const res = await authFetch(`/api/v1/websites/${siteId}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || `Failed to delete website (HTTP ${res.status})`);
-  }
+  await deleteWebsiteRequest(siteId);
 }
 
-// --- Integrations API ---
-
-export async function fetchIntegrations(): Promise<{ total: number; integrations: Integration[] }> {
-  const res = await authFetch('/api/v1/integrations');
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch integrations (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return { total: json.total || json.integrations?.length || 0, integrations: json.integrations || [] };
+export async function fetchIntegrations(): Promise<{
+  total: number;
+  integrations: Integration[];
+}> {
+  return fetchIntegrationsRequest();
 }
 
 export async function createIntegration(data: {
@@ -128,145 +70,48 @@ export async function createIntegration(data: {
   siteId?: string;
   description?: string;
 }): Promise<{ integration: Integration; secretKey: string }> {
-  const res = await authFetch('/api/v1/integrations', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Failed to create integration (HTTP ${res.status})`);
-  }
-  return { integration: json.integration, secretKey: json.integration.secretKey };
+  return createIntegrationRequest(data);
 }
 
 export async function rotateIntegrationKey(
   integrationId: string
 ): Promise<{ secretKey: string; apiKeyPrefix: string }> {
-  const res = await authFetch(`/api/v1/integrations/${integrationId}/rotate-key`, {
-    method: 'POST',
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Key rotation failed (HTTP ${res.status})`);
-  }
-  return { secretKey: json.secretKey, apiKeyPrefix: json.apiKeyPrefix };
+  return rotateIntegrationKeyRequest(integrationId);
 }
 
 export async function revokeIntegration(integrationId: string): Promise<Integration> {
-  const res = await authFetch(`/api/v1/integrations/${integrationId}/revoke`, {
-    method: 'POST',
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Revocation failed (HTTP ${res.status})`);
-  }
-  return json.integration;
+  return revokeIntegrationRequest(integrationId);
 }
 
 export async function deleteIntegration(integrationId: string): Promise<void> {
-  const res = await authFetch(`/api/v1/integrations/${integrationId}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw new Error(json.error?.message || `Failed to delete integration (HTTP ${res.status})`);
-  }
+  await deleteIntegrationRequest(integrationId);
 }
 
-// --- Website Attack Monitoring API (TASK-701 to TASK-707) ---
-
-export async function fetchWebDetections(siteId?: string): Promise<{ items: Detection[]; total: number }> {
-  const url = siteId
-    ? `/api/v1/websites/${siteId}/detections`
-    : '/api/v1/detections/web';
-
-  const res = await authFetch(url);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch detections (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return {
-    items: json.data?.items || [],
-    total: json.data?.total || json.data?.items?.length || 0,
-  };
+export async function fetchWebDetections(siteId?: string) {
+  const response = await fetchWebDetectionsRequest(siteId);
+  return { items: response.data.items, total: response.data.total };
 }
 
-export async function fetchWebIncidents(siteId?: string): Promise<{ items: Incident[]; total: number }> {
-  const url = siteId
-    ? `/api/v1/websites/${siteId}/incidents`
-    : '/api/v1/incidents';
-
-  const res = await authFetch(url);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch incidents (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return {
-    items: json.data?.items || [],
-    total: json.data?.total || json.data?.items?.length || 0,
-  };
+export async function fetchWebIncidents(siteId?: string) {
+  const response = await fetchIncidents({ siteId, limit: 100 });
+  return { items: response.data.items, total: response.data.total };
 }
 
-export async function fetchSiteRiskSummary(siteId: string): Promise<{
-  siteId: string;
-  domain: string;
-  environment: string;
-  riskTier: string;
-  currentRiskScore: number;
-  currentRiskBand: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-  factors: any;
-  detectedAttackTypes: string[];
-  totalIncidentsCount: number;
-  totalDetectionsCount: number;
-  latestIncidents: Incident[];
-  latestDetections: Detection[];
-}> {
-  const res = await authFetch(`/api/v1/websites/${siteId}/risk-summary`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch risk summary (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return json.data;
+export async function fetchSiteRiskSummary(siteId: string): Promise<RiskSummary> {
+  const response = await fetchSiteRiskSummaryRequest(siteId);
+  return response.data;
 }
 
-export async function fetchSiteTimeline(siteId: string): Promise<{
-  siteId: string;
-  domain: string;
-  items: Array<{
-    timestamp: string;
-    type: 'INCIDENT' | 'DETECTION';
-    title: string;
-    description: string;
-    severity: string;
-    sourceIp?: string;
-    details?: Record<string, unknown>;
-  }>;
-  total: number;
-}> {
-  const res = await authFetch(`/api/v1/websites/${siteId}/timeline`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Failed to fetch timeline (HTTP ${res.status})`);
-  }
-  const json = await res.json();
-  return json.data;
+export async function fetchSiteTimeline(siteId: string): Promise<SiteTimeline> {
+  const response = await fetchSiteTimelineRequest(siteId);
+  return response.data;
 }
 
 export async function updateIncidentStatus(
   incidentId: string,
   status: string,
   note?: string
-): Promise<Incident> {
-  const res = await authFetch(`/api/v1/incidents/${incidentId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ status, note }),
-  });
-  const json = await res.json();
-  if (!res.ok) {
-    throw new Error(json.error?.message || `Failed to update incident (HTTP ${res.status})`);
-  }
-  return json.data;
+) {
+  const response = await updateIncidentRequest(incidentId, { status, note });
+  return response.data;
 }

@@ -4,9 +4,41 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VELTRIX — Autonomous Cyber Threat Detection & Response</title>
+    <meta name="theme-color" content="#050505" />
+    <meta
+      name="description"
+      content="VELTRIX — unified website security monitoring, authorized vulnerability assessment and controlled response."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <title>VELTRIX · SOC Console</title>
+    <script>
+      // Resolve the stored theme before first paint so the shell never flashes
+      // the wrong palette. Mirrors ThemeProvider's resolution rules.
+      (function () {
+        try {
+          var stored = localStorage.getItem('veltrix.theme') || 'system';
+          var dark =
+            stored === 'dark' ||
+            (stored === 'system' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.classList.remove('dark', 'light');
+          root.classList.add(dark ? 'dark' : 'light');
+          root.style.colorScheme = dark ? 'dark' : 'light';
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', dark ? '#050505' : '#fcfcfd');
+        } catch (e) {
+          /* A blocked storage read must not block the console. */
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-[#0A0F1D] text-slate-100 min-h-screen antialiased selection:bg-[#00F2FE] selection:text-slate-900">
+  <body class="min-h-screen bg-veltrix-bg antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
