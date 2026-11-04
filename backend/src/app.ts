@@ -13,6 +13,8 @@ import { createDashboardRouter } from './routes/dashboard.js';
 import { createDemoRouter } from './routes/demo.js';
 import { createAuditRouter } from './routes/audit.js';
 import { createResponseRouter } from './routes/response.js';
+import { createScansRouter } from './routes/scans.js';
+import { createFindingsRouter } from './routes/findings.js';
 import { authenticate } from './middleware/auth.js';
 import { enforceTenantIsolation } from './middleware/tenant.js';
 import { requireRole } from './middleware/rbac.js';
@@ -99,6 +101,10 @@ export function createApp() {
   // Approval-gated response queue & tamper-evident audit ledger (Phase 10 read/act surface)
   app.use('/api/v1/response', createResponseRouter());
   app.use('/api/v1/audit', createAuditRouter());
+
+  // Authorized Vulnerability Scans & Findings (Phase 8)
+  app.use('/api/v1/scans', createScansRouter());
+  app.use('/api/v1/findings', createFindingsRouter());
 
   // Development-only deterministic demo dataset
   app.use('/api/v1/demo', createDemoRouter());
