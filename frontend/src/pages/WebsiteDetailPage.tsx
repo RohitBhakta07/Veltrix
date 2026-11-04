@@ -1,11 +1,36 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Globe, AlertTriangle, ShieldCheck, Lock, CheckCircle2 } from 'lucide-react';
-import { fetchWebsite, fetchSiteRiskSummary, fetchScanAuthorization } from '../lib/api/endpoints';
+import {
+  ArrowLeft,
+  Globe,
+  AlertTriangle,
+  ShieldCheck,
+  Lock,
+  CheckCircle2,
+  Clock,
+  ShieldAlert,
+  Activity,
+  Radio,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  fetchWebsite,
+  fetchSiteRiskSummary,
+  fetchScanAuthorization,
+  fetchWebsiteTimeline,
+} from '../lib/api/endpoints';
 import { WebsiteAttackMonitoring } from '../components/WebsiteAttackMonitoring';
 import { DomainVerificationModal } from '../components/DomainVerificationModal';
-import { Card, Badge, Button, LoadingPanel, StatusBadge, RiskBadge } from '../components/ui/primitives';
+import {
+  Card,
+  Badge,
+  Button,
+  LoadingPanel,
+  StatusBadge,
+  RiskBadge,
+  SeverityBadge,
+} from '../components/ui/primitives';
 
 export function WebsiteDetailPage() {
   const { siteId } = useParams<{ siteId: string }>();
@@ -29,8 +54,15 @@ export function WebsiteDetailPage() {
     enabled: !!siteId,
   });
 
+  const { data: timelineRes, refetch: refetchTimeline } = useQuery({
+    queryKey: ['website', siteId, 'timeline'],
+    queryFn: () => fetchWebsiteTimeline(siteId!),
+    enabled: !!siteId,
+  });
+
   const site = siteRes?.site;
   const risk = riskRes?.data;
+  const timelineItems = timelineRes?.items || [];
 
   if (loadingSite) return <LoadingPanel rows={6} />;
 
@@ -139,6 +171,82 @@ export function WebsiteDetailPage() {
         </Card>
       )}
 
+      {/* Interactive Attack & Security Timeline */}
+      <Card className="p-5 space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <Clock className="h-4 w-4 text-cyan-400" />
+              Attack & Security Timeline
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Chronological kill-chain audit: correlated incidents, active scan events, and canary detections
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs text-slate-400">
+              Total Events: <strong className="text-white">{timelineItems.length}</strong>
+            </span>
+            <Button variant="ghost" size="sm" icon={RefreshCw} onClick={() => refetchTimeline()}>
+              Sync
+            </Button>
+          </div>
+        </div>
+
+        {timelineItems.length === 0 ? (
+          <div className="py-8 text-center text-slate-500 font-mono text-xs">
+            No security incidents or detection telemetry recorded for this domain asset.
+          </div>
+        ) : (
+          <div className="relative pl-6 space-y-6 before:absolute before:bottom-2 before:top-2 before:left-[11px] before:w-[2px] before:bg-slate-800">
+            {timelineItems.map((item, idx) => (
+              <div key={idx} className="relative flex items-start gap-4">
+                {/* Timeline Node Bullet */}
+                <div
+                  className={`absolute -left-6 mt-1 flex h-6 w-6 items-center justify-center rounded-full border bg-slate-950 font-mono text-[10px] ${
+                    item.type === 'INCIDENT'
+                      ? 'border-rose-500/50 text-rose-400'
+                      : 'border-cyan-500/50 text-cyan-400'
+                  }`}
+                >
+                  {item.type === 'INCIDENT' ? (
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                  ) : (
+                    <Activity className="h-3.5 w-3.5" />
+                  )}
+                </div>
+
+                {/* Event Content Card */}
+                <div className="flex-1 rounded-lg border border-slate-800 bg-slate-900/50 p-3.5 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge tone={item.type === 'INCIDENT' ? 'critical' : 'info'}>
+                        {item.type}
+                      </Badge>
+                      <SeverityBadge severity={item.severity} />
+                      <h3 className="text-xs font-bold text-white">{item.title}</h3>
+                    </div>
+                    <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400">
+                      {item.sourceIp && (
+                        <span className="flex items-center gap-1 text-cyan-300">
+                          <Radio className="h-3 w-3" />
+                          {item.sourceIp}
+                        </span>
+                      )}
+                      <span>{new Date(item.timestamp).toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {item.description}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       {/* Attack Monitoring Subsystem */}
       <WebsiteAttackMonitoring />
 
@@ -151,6 +259,7 @@ export function WebsiteDetailPage() {
           onSuccess={() => {
             refetchSite();
             refetchAuth();
+            refetchTimeline();
           }}
         />
       )}
