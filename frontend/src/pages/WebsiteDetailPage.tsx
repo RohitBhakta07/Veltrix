@@ -1,14 +1,17 @@
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Globe, AlertTriangle, ShieldCheck } from 'lucide-react';
-import { fetchWebsite, fetchSiteRiskSummary } from '../lib/api/endpoints';
+import { ArrowLeft, Globe, AlertTriangle, ShieldCheck, Lock, CheckCircle2 } from 'lucide-react';
+import { fetchWebsite, fetchSiteRiskSummary, fetchScanAuthorization } from '../lib/api/endpoints';
 import { WebsiteAttackMonitoring } from '../components/WebsiteAttackMonitoring';
+import { DomainVerificationModal } from '../components/DomainVerificationModal';
 import { Card, Badge, Button, LoadingPanel, StatusBadge, RiskBadge } from '../components/ui/primitives';
 
 export function WebsiteDetailPage() {
   const { siteId } = useParams<{ siteId: string }>();
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
 
-  const { data: siteRes, isLoading: loadingSite } = useQuery({
+  const { data: siteRes, isLoading: loadingSite, refetch: refetchSite } = useQuery({
     queryKey: ['website', siteId],
     queryFn: () => fetchWebsite(siteId!),
     enabled: !!siteId,
@@ -20,10 +23,18 @@ export function WebsiteDetailPage() {
     enabled: !!siteId,
   });
 
+  const { data: scanAuth, refetch: refetchAuth } = useQuery({
+    queryKey: ['website', siteId, 'scan-authorization'],
+    queryFn: () => fetchScanAuthorization(siteId!),
+    enabled: !!siteId,
+  });
+
   const site = siteRes?.site;
   const risk = riskRes?.data;
 
   if (loadingSite) return <LoadingPanel rows={6} />;
+
+  const isPending = !site || site.status === 'PENDING_VERIFICATION' || site.status === 'GRACE_PERIOD' || site.scanBlocked;
 
   return (
     <div className="space-y-6">
@@ -34,6 +45,17 @@ export function WebsiteDetailPage() {
             Back to Inventory
           </Button>
         </Link>
+
+        {isPending && site && (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={ShieldCheck}
+            onClick={() => setShowVerifyModal(true)}
+          >
+            Verify Domain
+          </Button>
+        )}
       </div>
 
       {/* Asset Header Banner */}
@@ -48,6 +70,17 @@ export function WebsiteDetailPage() {
                 <h1 className="text-xl font-bold text-white">{site?.name || 'Website Asset'}</h1>
                 <StatusBadge status={site?.status || 'VERIFIED'} />
                 {site?.riskTier && <Badge tone="neutral">{site.riskTier}</Badge>}
+                {isPending ? (
+                  <Badge tone="amber">
+                    <Lock className="mr-1 h-3 w-3 inline" />
+                    Scans Blocked
+                  </Badge>
+                ) : (
+                  <Badge tone="emerald">
+                    <CheckCircle2 className="mr-1 h-3 w-3 inline" />
+                    Scan Authorized
+                  </Badge>
+                )}
               </div>
               <p className="font-mono text-xs text-slate-400 mt-0.5">
                 {site?.primaryDomain || siteId}
@@ -108,6 +141,19 @@ export function WebsiteDetailPage() {
 
       {/* Attack Monitoring Subsystem */}
       <WebsiteAttackMonitoring />
+
+      {/* Modal */}
+      {site && (
+        <DomainVerificationModal
+          isOpen={showVerifyModal}
+          onClose={() => setShowVerifyModal(false)}
+          site={site}
+          onSuccess={() => {
+            refetchSite();
+            refetchAuth();
+          }}
+        />
+      )}
     </div>
   );
 }
