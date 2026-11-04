@@ -12,7 +12,7 @@ async function bootstrap(): Promise<void> {
     await initializeDefaultInternalEvidenceAuthority();
   } catch (err) {
     console.error('[VELTRIX] Fatal error initializing internal evidence authority:', err);
-    if (process.env.NODE_ENV === 'production') {
+    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
       process.exit(1);
     }
   }
