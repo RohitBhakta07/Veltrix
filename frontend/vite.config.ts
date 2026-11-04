@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@veltrix/shared': path.resolve(__dirname, '../packages/shared/src/index.ts'),
+      '@veltrix/shared': path.resolve(__dirname, 'src/shared/index.ts'),
     },
   },
   server: {
