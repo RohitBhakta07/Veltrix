@@ -161,3 +161,4 @@ describe('Scans & Findings REST API Router (TASK-1)', () => {
     expect(Array.isArray(res.body.data.items)).toBe(true);
   });
 });
+

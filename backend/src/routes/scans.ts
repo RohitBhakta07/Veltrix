@@ -223,3 +223,4 @@ export function createScansRouter(): Router {
 
   return router;
 }
+

@@ -71,3 +71,4 @@ describe('FindingsPage Component (TASK-5)', () => {
     expect(html).toContain('Unauthenticated SQL Injection in Authentication Endpoint');
   });
 });
+

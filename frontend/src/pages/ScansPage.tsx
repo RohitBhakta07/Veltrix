@@ -1,10 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ScanLine,
   AlertTriangle,
   ShieldCheck,
-  ShieldAlert,
   Play,
   RefreshCw,
   StopCircle,
@@ -13,7 +12,6 @@ import {
   Lock,
 } from 'lucide-react';
 import { fetchWebsites, fetchScans, createScan, abortScan } from '../lib/api/endpoints';
-import type { ScanJob } from '../lib/api/types';
 import {
   Card,
   Button,
@@ -21,6 +19,7 @@ import {
   LoadingPanel,
   EmptyState,
 } from '../components/ui/primitives';
+import type { Tone } from '../lib/format';
 
 export function ScansPage() {
   const queryClient = useQueryClient();
@@ -111,18 +110,18 @@ export function ScansPage() {
     }
   };
 
-  const getStageTone = (status: string) => {
+  const getStageTone = (status: string): Tone => {
     switch (status) {
       case 'RUNNING':
-        return 'cyan';
+        return 'info';
       case 'COMPLETED':
-        return 'emerald';
+        return 'success';
       case 'ABORTED':
-        return 'rose';
+        return 'critical';
       case 'FAILED':
-        return 'rose';
+        return 'critical';
       default:
-        return 'amber';
+        return 'medium';
     }
   };
 
@@ -215,7 +214,7 @@ export function ScansPage() {
                     </div>
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-[10px] text-slate-500 font-mono">{site.environment}</span>
-                      <Badge tone={eligible ? 'emerald' : 'rose'}>
+                      <Badge tone={eligible ? 'success' : 'critical'}>
                         {site.status}
                       </Badge>
                     </div>
@@ -301,8 +300,11 @@ export function ScansPage() {
                 ? 'Launch your first authorized vulnerability scan against a verified website.'
                 : `No ${activeTab} scans in the assessment queue.`
             }
-            actionLabel="Launch Scan"
-            onAction={() => setShowLaunchModal(true)}
+            action={
+              <Button variant="primary" size="sm" icon={Play} onClick={() => setShowLaunchModal(true)}>
+                Launch Scan
+              </Button>
+            }
           />
         )}
 
@@ -481,6 +483,32 @@ export function ScansPage() {
                       </div>
                     </div>
                   </label>
+                </div>
+              </div>
+
+              {/* Crawler Depth & Limits */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Max Crawl Depth</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={maxDepth}
+                    onChange={(e) => setMaxDepth(Number(e.target.value))}
+                    className="w-full rounded bg-slate-950 border border-slate-800 px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Max Crawl Pages</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={1000}
+                    value={maxPages}
+                    onChange={(e) => setMaxPages(Number(e.target.value))}
+                    className="w-full rounded bg-slate-950 border border-slate-800 px-3 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                  />
                 </div>
               </div>
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   ShieldCheck,
   Globe,
@@ -8,7 +8,6 @@ import {
   FileCode,
   Radio,
   X,
-  ExternalLink,
   RefreshCw,
   Lock,
 } from 'lucide-react';
@@ -43,11 +42,29 @@ export function DomainVerificationModal({
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const dnsTxtRecordValue = site.dnsTxtRecord || `veltrix-domain-verification=${site.verificationToken || 'token'}`;
-  const dnsTxtHost = `_veltrix-challenge.${site.primaryDomain}`;
-  const httpPath = site.httpChallenge?.path || '/.well-known/veltrix-challenge.txt';
-  const httpExpectedBody = site.httpChallenge?.expectedBody || site.verificationToken || 'token';
-  const metaTagContent = site.metaTag || `<meta name="veltrix-domain-verification" content="${site.verificationToken || 'token'}">`;
+  const dnsTxtRecordValue = typeof site.dnsTxtRecord === 'object' && site.dnsTxtRecord !== null
+    ? site.dnsTxtRecord.value
+    : typeof (site.dnsTxtRecord as any) === 'string'
+    ? (site.dnsTxtRecord as any)
+    : `veltrix-domain-verification=${site.verificationToken || 'token'}`;
+
+  const dnsTxtHost = typeof site.dnsTxtRecord === 'object' && site.dnsTxtRecord !== null && site.dnsTxtRecord.host
+    ? site.dnsTxtRecord.host
+    : `_veltrix-challenge.${site.primaryDomain}`;
+
+  const httpUrl = site.httpChallenge?.url || `https://${site.primaryDomain}/.well-known/veltrix-challenge.txt`;
+
+  const httpExpectedBody = typeof site.httpChallenge?.expectedBody === 'object' && site.httpChallenge.expectedBody !== null
+    ? JSON.stringify(site.httpChallenge.expectedBody, null, 2)
+    : typeof (site.httpChallenge?.expectedBody as any) === 'string'
+    ? (site.httpChallenge.expectedBody as any)
+    : site.verificationToken || 'token';
+
+  const metaTagContent = typeof site.metaTag === 'object' && site.metaTag !== null
+    ? site.metaTag.tag
+    : typeof (site.metaTag as any) === 'string'
+    ? (site.metaTag as any)
+    : `<meta name="veltrix-domain-verification" content="${site.verificationToken || 'token'}">`;
 
   const handleVerify = async () => {
     try {
@@ -86,7 +103,7 @@ export function DomainVerificationModal({
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 Verify Domain Ownership
-                <Badge tone="cyan">{site.primaryDomain}</Badge>
+                <Badge tone="info">{site.primaryDomain}</Badge>
               </h2>
               <p className="text-xs text-slate-400">
                 Prove domain administrative ownership to unlock automated crawling and active security probes.
@@ -101,72 +118,62 @@ export function DomainVerificationModal({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {/* Scan Block Notice */}
-          <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-amber-300 text-xs">
-            <Lock className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-            <div>
-              <span className="font-semibold text-amber-200">Security Gate Active:</span> In compliance with ethical penetration testing standards, VELTRIX restricts non-destructive active probes until domain ownership is validated.
-            </div>
+        {/* Content */}
+        <div className="p-6 space-y-6 overflow-y-auto">
+          {/* Method selector tabs */}
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              {
+                id: 'DNS_TXT',
+                label: 'DNS TXT Record',
+                desc: 'Add TXT record to domain DNS',
+                icon: Globe,
+              },
+              {
+                id: 'HTTP_CHALLENGE',
+                label: 'HTTP Challenge',
+                desc: 'Place challenge JSON file on web server',
+                icon: FileCode,
+              },
+              {
+                id: 'META_TAG',
+                label: 'HTML Meta Tag',
+                desc: 'Insert meta tag into homepage head',
+                icon: Radio,
+              },
+            ].map((m) => {
+              const Icon = m.icon;
+              const active = selectedMethod === m.id;
+              return (
+                <button
+                  type="button"
+                  key={m.id}
+                  onClick={() => {
+                    setSelectedMethod(m.id as any);
+                    setErrorMessage(null);
+                  }}
+                  className={`flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition ${
+                    active
+                      ? 'border-cyan-500 bg-cyan-500/10 text-cyan-300'
+                      : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 font-semibold text-xs text-white">
+                    <Icon className={`h-4 w-4 ${active ? 'text-cyan-400' : 'text-slate-500'}`} />
+                    <span>{m.label}</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 leading-tight">{m.desc}</span>
+                </button>
+              );
+            })}
           </div>
 
-          {/* Method Tabs */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-2">
-              Choose Verification Method
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedMethod('DNS_TXT')}
-                className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition-all ${
-                  selectedMethod === 'DNS_TXT'
-                    ? 'border-cyan-500 bg-cyan-500/10 text-cyan-300 shadow-sm shadow-cyan-500/20'
-                    : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <Radio className="h-4 w-4 mb-1.5" />
-                DNS TXT Record
-                <span className="text-[10px] text-slate-400 mt-0.5">(Recommended)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedMethod('HTTP_CHALLENGE')}
-                className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition-all ${
-                  selectedMethod === 'HTTP_CHALLENGE'
-                    ? 'border-cyan-500 bg-cyan-500/10 text-cyan-300 shadow-sm shadow-cyan-500/20'
-                    : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <Globe className="h-4 w-4 mb-1.5" />
-                HTTP Challenge
-                <span className="text-[10px] text-slate-400 mt-0.5">File Upload</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedMethod('META_TAG')}
-                className={`flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-semibold transition-all ${
-                  selectedMethod === 'META_TAG'
-                    ? 'border-cyan-500 bg-cyan-500/10 text-cyan-300 shadow-sm shadow-cyan-500/20'
-                    : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <FileCode className="h-4 w-4 mb-1.5" />
-                HTML Meta Tag
-                <span className="text-[10px] text-slate-400 mt-0.5">Homepage &lt;head&gt;</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Instructions Content */}
+          {/* Instructions Box */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4 space-y-3">
             {selectedMethod === 'DNS_TXT' && (
               <>
                 <p className="text-xs text-slate-300">
-                  Add the following <code className="text-cyan-400 font-mono">TXT</code> record to your DNS provider (Cloudflare, Route53, GoDaddy, etc.):
+                  Add the following <code className="text-cyan-400 font-mono">TXT</code> record with your DNS provider (Cloudflare, Route53, Namecheap, etc.):
                 </p>
 
                 <div>
@@ -204,16 +211,16 @@ export function DomainVerificationModal({
             {selectedMethod === 'HTTP_CHALLENGE' && (
               <>
                 <p className="text-xs text-slate-300">
-                  Upload a plain text file accessible via public HTTP(S) at:
+                  Upload a plain text or JSON file accessible via public HTTP(S) at:
                 </p>
 
                 <div>
-                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">File Path URL</span>
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block mb-1">File URL</span>
                   <div className="flex items-center justify-between rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 font-mono text-xs text-white">
-                    <span className="truncate">{`https://${site.primaryDomain}${httpPath}`}</span>
+                    <span className="truncate">{httpUrl}</span>
                     <button
                       type="button"
-                      onClick={() => copyToClipboard(`https://${site.primaryDomain}${httpPath}`, 'httppath')}
+                      onClick={() => copyToClipboard(httpUrl, 'httppath')}
                       className="ml-2 text-slate-400 hover:text-white"
                       title="Copy Path"
                     >
@@ -277,22 +284,29 @@ export function DomainVerificationModal({
               <span>{successMessage}</span>
             </div>
           )}
+
+          {/* Verification Scope Gate Note */}
+          <div className="flex items-start gap-2 rounded-lg bg-slate-950 p-3 text-[11px] text-slate-400 border border-slate-800">
+            <Lock className="h-4 w-4 shrink-0 text-cyan-400 mt-0.5" />
+            <span>
+              <strong>Zero-Trust Gate:</strong> Active vulnerability probes and depth crawlers require confirmed domain ownership. Verification expires automatically after 90 days.
+            </span>
+          </div>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-slate-800 bg-slate-950/40 px-6 py-4">
-          <Button variant="ghost" size="sm" onClick={onClose}>
+        <div className="flex items-center justify-end gap-3 border-t border-slate-800 bg-slate-900/60 px-6 py-4">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={isSubmitting}>
             Cancel
           </Button>
-
           <Button
             variant="primary"
             size="sm"
+            icon={isSubmitting ? RefreshCw : ShieldCheck}
             onClick={handleVerify}
             disabled={isSubmitting}
-            icon={RefreshCw}
           >
-            {isSubmitting ? 'Verifying...' : 'Verify Ownership Now'}
+            {isSubmitting ? 'Verifying Challenge...' : 'Verify Ownership Now'}
           </Button>
         </div>
       </div>

@@ -48,7 +48,7 @@ export function WebsiteDetailPage() {
     enabled: !!siteId,
   });
 
-  const { data: scanAuth, refetch: refetchAuth } = useQuery({
+  const { refetch: refetchAuth } = useQuery({
     queryKey: ['website', siteId, 'scan-authorization'],
     queryFn: () => fetchScanAuthorization(siteId!),
     enabled: !!siteId,
@@ -103,12 +103,12 @@ export function WebsiteDetailPage() {
                 <StatusBadge status={site?.status || 'VERIFIED'} />
                 {site?.riskTier && <Badge tone="neutral">{site.riskTier}</Badge>}
                 {isPending ? (
-                  <Badge tone="amber">
+                  <Badge tone="medium">
                     <Lock className="mr-1 h-3 w-3 inline" />
                     Scans Blocked
                   </Badge>
                 ) : (
-                  <Badge tone="emerald">
+                  <Badge tone="success">
                     <CheckCircle2 className="mr-1 h-3 w-3 inline" />
                     Scan Authorized
                   </Badge>

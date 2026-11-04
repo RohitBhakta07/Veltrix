@@ -48,6 +48,7 @@ describe('Scans, Findings, and Verification API Adapters (TASK-2)', () => {
     );
 
     const result = await endpoints.fetchScanAuthorization('site-123');
+    expect(mockFetch).toHaveBeenCalled();
     expect(result.authorized).toBe(true);
     expect(result.primaryDomain).toBe('shop.veltrix.io');
   });
@@ -76,6 +77,7 @@ describe('Scans, Findings, and Verification API Adapters (TASK-2)', () => {
       maxDepth: 3,
     });
 
+    expect(mockFetch).toHaveBeenCalled();
     expect(result.scanId).toBe('scan-999');
     expect(result.status).toBe('RUNNING');
   });
@@ -104,6 +106,7 @@ describe('Scans, Findings, and Verification API Adapters (TASK-2)', () => {
     );
 
     const result = await endpoints.fetchScans({ siteId: 'site-123' });
+    expect(mockFetch).toHaveBeenCalled();
     expect(result.length).toBe(1);
     expect(result[0].scanId).toBe('scan-1');
   });
@@ -131,6 +134,7 @@ describe('Scans, Findings, and Verification API Adapters (TASK-2)', () => {
     );
 
     const result = await endpoints.fetchFindings();
+    expect(mockFetch).toHaveBeenCalled();
     expect(result.length).toBe(1);
     expect(result[0].findingId).toBe('fnd-1');
   });
@@ -158,7 +162,9 @@ describe('Scans, Findings, and Verification API Adapters (TASK-2)', () => {
     );
 
     const result = await endpoints.fetchWebsiteTimeline('site-123');
+    expect(mockFetch).toHaveBeenCalled();
     expect(result.items.length).toBe(1);
     expect(result.items[0].title).toBe('Web Attack Probe');
   });
 });
+

@@ -19,11 +19,22 @@ describe('Domain Verification UI (TASK-3)', () => {
     riskTier: 'HIGH',
     tags: [],
     verificationToken: 'token-abc-123',
-    dnsTxtRecord: 'veltrix-domain-verification=token-abc-123',
-    metaTag: '<meta name="veltrix-domain-verification" content="token-abc-123">',
+    tokenCreatedAt: new Date().toISOString(),
+    dnsTxtRecord: {
+      host: '_veltrix-challenge.pending.example.com',
+      value: 'veltrix-domain-verification=token-abc-123',
+    },
+    metaTag: {
+      tag: '<meta name="veltrix-domain-verification" content="token-abc-123">',
+      name: 'veltrix-domain-verification',
+      content: 'token-abc-123',
+    },
     httpChallenge: {
-      path: '/.well-known/veltrix-challenge.txt',
-      expectedBody: 'token-abc-123',
+      url: 'https://pending.example.com/.well-known/veltrix-challenge.txt',
+      expectedBody: {
+        veltrixChallengeToken: 'token-abc-123',
+        orgId: 'org-test',
+      },
     },
     scanBlocked: true,
     health: { telemetryStatus: 'INACTIVE', eventsPerMinute: 0 },

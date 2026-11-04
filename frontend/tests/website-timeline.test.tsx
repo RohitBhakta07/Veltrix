@@ -79,3 +79,4 @@ describe('WebsiteDetailPage Attack Timeline (TASK-6)', () => {
     expect(html).toContain('DETECTION');
   });
 });
+
