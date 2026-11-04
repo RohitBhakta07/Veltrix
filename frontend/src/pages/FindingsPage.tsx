@@ -196,11 +196,10 @@ export function FindingsPage() {
             <button
               key={sev}
               onClick={() => setSeverityFilter(sev)}
-              className={`rounded-lg px-3 py-1 text-xs font-semibold border transition ${
-                severityFilter === sev
+              className={`rounded-lg px-3 py-1 text-xs font-semibold border transition ${severityFilter === sev
                   ? 'bg-cyan-500/10 border-cyan-500 text-cyan-300'
                   : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
-              }`}
+                }`}
             >
               {sev}
             </button>
@@ -286,8 +285,8 @@ export function FindingsPage() {
                             f.status === 'RESOLVED'
                               ? 'success'
                               : f.status === 'IN_REMEDIATION'
-                              ? 'medium'
-                              : 'critical'
+                                ? 'medium'
+                                : 'critical'
                           }
                         >
                           {f.status}
